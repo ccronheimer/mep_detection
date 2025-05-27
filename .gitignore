@@ -10,13 +10,6 @@ venv/
 ENV/
 .venv
 
-# Data files
-*.mat
-*.csv
-*.png
-*.jpg
-*.jpeg
-
 # OS
 .DS_Store
 Thumbs.db
