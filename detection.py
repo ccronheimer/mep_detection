@@ -16,54 +16,73 @@ from pathlib import Path
 # ============================================================================
 
 EXPERIMENT_CONFIGS = {
+   # Corrected configurations for detection script:
+
     "Nov5_Olive": {
         "description": "Nov5 Olive Experiment",
-        "hemisphere_switch_time": 690.0,
+        "hemisphere_switch_time": 695.0,  # Match your specification
         "healthy": {
             "channels": [2, 4, 7],
             "channel_names": ["Right Upper", "Right Forearm", "Right Hand"],
             "expected_pulses": 182,
-            "description": "Healthy Left Hemisphere → Right Muscles (0-690s)"
+            "description": "Healthy Left Hemisphere → Right Muscles (0-695s)"
         },
         "stroke": {
             "channels": [8, 9, 11],
             "channel_names": ["Left Upper", "Left Forearm", "Left Hand"],
-            "expected_pulses": 262,
-            "description": "Stroke Right Hemisphere → Left Muscles (690s-end)"
+            "expected_pulses": 263,  # 183-445 = 263 pulses
+            "description": "Stroke Right Hemisphere → Left Muscles (695s-end)"
         }
     },
 
     "Nov5_Chive": {
-        "description": "Nov5 Chive Experiment",
-        "hemisphere_switch_time": 857.0,  # Match your sheet (857 seconds)
+        "description": "Nov5 Chive Experiment (Ch2,10 noisy)",
+        "hemisphere_switch_time": 857.0,
         "healthy": {
-            "channels": [4, 2, 8],  # ✅ Ch9=Right Upper, Ch2=Right Forearm, Ch8=Right Hand
+            "channels": [9, 2, 8],  # Fixed: was [4, 2, 8]
             "channel_names": ["Right Upper", "Right Forearm", "Right Hand"],
             "expected_pulses": 115,
             "description": "Healthy Left Hemisphere → Right Muscles"
         },
         "stroke": {
-            "channels": [9, 10, 7],  # ✅ Ch4=Left Upper, Ch10=Left Forearm, Ch7=Left Hand
+            "channels": [4, 10, 7],  # Fixed: was [9, 10, 7]
             "channel_names": ["Left Upper", "Left Forearm", "Left Hand"],
-            "expected_pulses": 172,  # 287-115 = 172
+            "expected_pulses": 172,  # 287-115 = 172 (this was correct)
             "description": "Stroke Right Hemisphere → Left Muscles"
         }
     },
 
     "Nov5_Cheddar": {
         "description": "Nov5 Cheddar Experiment",
-        "hemisphere_switch_time": 650,  # seconds
+        "hemisphere_switch_time": 650.0,
         "healthy": {
             "channels": [2, 4, 12],
             "channel_names": ["Right Upper", "Right Forearm", "Right Hand"],
             "expected_pulses": 105,
-            "description": "Healthy hemisphere description"
+            "description": "Healthy Left Hemisphere → Right Muscles"
         },
         "stroke": {
             "channels": [14, 9, 13],
             "channel_names": ["Left Upper", "Left Forearm", "Left Hand"],
-            "expected_pulses": 205,
-            "description": "Stroke hemisphere description"
+            "expected_pulses": 195,  # Fixed: 106-300 = 195, not 205
+            "description": "Stroke Right Hemisphere → Left Muscles"
+        }
+    },
+
+    "Oct31_Chive": {
+        "description": "Oct5 Chive Experiment",
+        "hemisphere_switch_time": 930.0,
+        "healthy": {
+            "channels": [1, 2, 3],
+            "channel_names": ["Right Upper", "Right Forearm", "Right Hand"],
+            "expected_pulses": 85,
+            "description": "Healthy Left Hemisphere → Right Muscles"
+        },
+        "stroke": {
+            "channels": [4, 5, 6],
+            "channel_names": ["Left Upper", "Left Forearm", "Left Hand"],
+            "expected_pulses": 205,  
+            "description": "Stroke Right Hemisphere → Left Muscles"
         }
     }
 }
