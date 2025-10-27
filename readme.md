@@ -13,6 +13,9 @@ pip install -r requirements.txt
 1.
 ```bash
 python detection.py /Users/cameroncronheimer/Desktop/tms_detection/Nov5_Olive
+
+python epoch.py /Users/cameroncronheimer/Desktop/tms_detection/Nov5_Olive
+
 ```
 2. 
 ```bash
