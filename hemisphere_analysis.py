@@ -262,33 +262,33 @@ def load_all_experiment_data(base_path: Path):
 
         exp_results = {"config": config, "muscle_data": {}, "stats_results": {}}
 
-        # Special: Mely APB-only
-        if exp_name == "Dec1_Mely":
-            apb = "Abductor Pollicis Brevis"
-            if apb not in enabled_muscles:
-                print("   (Mely APB-only) APB disabled; skipping.")
-                continue
+        # # Special: Mely APB-only
+        # if exp_name == "Dec1_Mely":
+        #     apb = "Abductor Pollicis Brevis"
+        #     if apb not in enabled_muscles:
+        #         print("   (Mely APB-only) APB disabled; skipping.")
+        #         continue
 
-            healthy_ch = 135
-            stroke_ch = 136
-            hc = f"ch{healthy_ch}_amplitude"
-            sc = f"ch{stroke_ch}_amplitude"
+        #     healthy_ch = 135
+        #     stroke_ch = 136
+        #     hc = f"ch{healthy_ch}_amplitude"
+        #     sc = f"ch{stroke_ch}_amplitude"
 
-            h_raw = healthy_df[hc].dropna() if hc in healthy_df.columns else pd.Series([], dtype=float)
-            s_raw = stroke_df[sc].dropna() if sc in stroke_df.columns else pd.Series([], dtype=float)
+        #     h_raw = healthy_df[hc].dropna() if hc in healthy_df.columns else pd.Series([], dtype=float)
+        #     s_raw = stroke_df[sc].dropna() if sc in stroke_df.columns else pd.Series([], dtype=float)
 
-            if PLOT_SETTINGS["remove_outliers"]:
-                h = remove_outliers(h_raw, PLOT_SETTINGS["outlier_method"], PLOT_SETTINGS["outlier_upper_limit"])
-                s = remove_outliers(s_raw, PLOT_SETTINGS["outlier_method"], PLOT_SETTINGS["outlier_upper_limit"])
-            else:
-                h, s = h_raw.copy(), s_raw.copy()
+        #     if PLOT_SETTINGS["remove_outliers"]:
+        #         h = remove_outliers(h_raw, PLOT_SETTINGS["outlier_method"], PLOT_SETTINGS["outlier_upper_limit"])
+        #         s = remove_outliers(s_raw, PLOT_SETTINGS["outlier_method"], PLOT_SETTINGS["outlier_upper_limit"])
+        #     else:
+        #         h, s = h_raw.copy(), s_raw.copy()
 
-            exp_results["muscle_data"][apb] = {"healthy": h, "stroke": s}
-            exp_results["stats_results"][apb] = {"healthy": _stats(h), "stroke": _stats(s)}
+        #     exp_results["muscle_data"][apb] = {"healthy": h, "stroke": s}
+        #     exp_results["stats_results"][apb] = {"healthy": _stats(h), "stroke": _stats(s)}
 
-            print(f"   (Mely APB-only) APB: H={len(h)}, S={len(s)}")
-            all_experiments[exp_name] = exp_results
-            continue
+        #     print(f"   (Mely APB-only) APB: H={len(h)}, S={len(s)}")
+        #     all_experiments[exp_name] = exp_results
+        #     continue
 
         # Default: all muscles per mapping
         for healthy_ch, stroke_ch, muscle_name in zip(
