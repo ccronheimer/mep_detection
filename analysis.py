@@ -1,328 +1,40 @@
 #!/usr/bin/env python3
 """
-Enhanced MEP Analysis Script - Optimized for Research Posters
-Creates clean, high-contrast visualizations suitable for academic poster presentations
-FIXED: White background instead of transparent
-UPDATED: Wider spacing between monkeys while preserving muscle spacing
-ADDED: MEP-NHPUES correlation analysis with appropriate statistics for n=3
-ADDED: NHPUES bar graph with matching style
-FIXED: Systematic offsets, Arial fonts, and x-axis spacing
-MODIFIED: Bar width reduced by 40% (from 0.6 to 0.36)
-MODIFIED: NHPUES panel width set to half of MEP panel width (2:1 ratio)
+MEP Analysis Script (Poster Optimized) + Backward-Compatible Phase/Hemisphere Support
++ Individual-per-NHP plots
+
+What this version fixes / adds:
+1) ✅ Works with BOTH detection outputs:
+   - old CSVs: column "hemisphere"
+   - new windowed CSVs: column "phase"
+   (Auto-detects which exists.)
+
+2) ✅ Adds Dec1_Mely into ANALYSIS_CONFIGS + MONKEY_CONFIG.
+
+3) ✅ Adds "individual shot" figures:
+   - One plot PER NHP/experiment (stroke-only points + mean lines), same styling as group plot.
+
+Notes:
+- If you want Mely in NHPUES plots/correlation, set its NHPUES score in NHPUES_SCORES.
+- Directory layout assumed:
+    ./Nov5_Olive/mep_results.csv
+    ./Nov5_Cheddar/mep_results.csv
+    ./Oct31_Chive/mep_results.csv
+    ./Dec1_Mely/mep_results.csv
 """
-import pandas as pd
+
+import argparse
+from pathlib import Path
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats
-from pathlib import Path
-import argparse
-import json
 
 # =============================================================================
-# NEW: COMBINED SIDE-BY-SIDE PLOT
+# 🎯 POSTER-OPTIMIZED CONFIGURATION
 # =============================================================================
 
-def create_combined_mep_nhpues_plot(all_experiments: dict, output_dir: Path):
-    """Create combined plot with MEP stroke data on left and NHPUES bar plot on right"""
-    
-    print("\n📊 CREATING COMBINED MEP-NHPUES SIDE-BY-SIDE PLOT")
-    print("=" * 55)
-    
-    filtered_experiments = {k: v for k, v in all_experiments.items() if ANALYSIS_CONFIGS[k].get('show', True)}
-    muscle_names = [muscle for muscle, show in MUSCLE_CONFIG.items() if show]
-    
-    if not filtered_experiments:
-        print("❌ No experiments selected")
-        return None
-    
-    # Create figure with subplots side by side - MODIFIED: Right panel half width of left panel
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(PLOT_SETTINGS["figure_width"]*2, PLOT_SETTINGS["figure_height"]), 
-                                   gridspec_kw={'width_ratios': [2, 1]})
-    
-    # =============================================================================
-    # LEFT SUBPLOT: MEP STROKE PLOT
-    # =============================================================================
-    
-    ax1.set_title('MEPs in Stroke-Affected Hemispheres', 
-                 fontsize=PLOT_SETTINGS["title_font_size"], 
-                 fontweight='bold', 
-                 color='#000000',
-                 family='Arial',
-                 pad=40)
-    
-    n_experiments = len(filtered_experiments)
-    n_muscles = len(muscle_names)
-    
-    monkey_base_positions = np.arange(n_experiments) * PLOT_SETTINGS["muscle_group_spacing"]
-    muscle_width = 1.2
-    total_muscle_width = (n_muscles - 1) * muscle_width
-    muscle_offsets = np.linspace(-total_muscle_width/2, total_muscle_width/2, n_muscles)
-    
-    all_stroke_data = []
-    for exp_data in filtered_experiments.values():
-        for muscle in muscle_names:
-            if muscle in exp_data['muscle_data']:
-                all_stroke_data.extend(exp_data['muscle_data'][muscle]['stroke'].tolist())
-    
-    y_max_mep = max(all_stroke_data) * 1.2 if all_stroke_data else 100
-    
-    for monkey_idx, (exp_name, exp_data) in enumerate(filtered_experiments.items()):
-        config_exp = exp_data['config']
-        short_name = config_exp['short_name']
-        monkey_x = monkey_base_positions[monkey_idx]
-        
-        for muscle_idx, muscle in enumerate(muscle_names):
-            if muscle in exp_data['muscle_data'] and muscle in exp_data['stats_results']:
-                stroke_data = exp_data['muscle_data'][muscle]['stroke']
-                stroke_stats = exp_data['stats_results'][muscle]['stroke']
-                muscle_color = get_muscle_color(muscle)
-                
-                if len(stroke_data) > 0:
-                    x_center = monkey_x + muscle_offsets[muscle_idx]
-                    
-                    jitter_width = 0.4
-                    jitter = np.random.uniform(-jitter_width, jitter_width, len(stroke_data))
-                    x_coords = np.full(len(stroke_data), x_center) + jitter
-                    
-                    ax1.scatter(x_coords, stroke_data, 
-                               color=muscle_color, alpha=1, s=200,
-                               marker='o', edgecolors=muscle_color,
-                               linewidth=2, zorder=5)
-                    
-                    # Mean line
-                    mean_val = stroke_stats['mean']
-                    mean_line_width = 0.45
-                    ax1.plot([x_center - mean_line_width, x_center + mean_line_width], 
-                            [mean_val, mean_val], 
-                            color='black', linewidth=6,
-                            solid_capstyle='round', zorder=10)
-                    
-                    muscle_label = "APB" if muscle == "Abductor Pollicis Brevis" else muscle
-                    ax1.text(x_center, -y_max_mep * 0.06, muscle_label, 
-                            ha='center', va='top', 
-                            fontsize=PLOT_SETTINGS["tick_label_font_size"],
-                            fontweight='normal', color='black',
-                            fontfamily='Arial')
-        
-        ax1.text(monkey_x, -y_max_mep * 0.15, short_name, 
-                ha='center', va='top', 
-                fontsize=PLOT_SETTINGS["axis_label_font_size"],
-                fontweight='normal', color='black',
-                fontfamily='Arial')
-    
-    # Configure MEP plot axes
-    margin_ratio = 0.25
-    total_width = monkey_base_positions[-1] if len(monkey_base_positions) > 0 else PLOT_SETTINGS["muscle_group_spacing"]
-    left_margin = total_width * margin_ratio
-    right_margin = total_width * margin_ratio
-    
-    ax1.set_xlim(-left_margin, total_width + right_margin)
-    y_max_rounded_mep = configure_axis_ticks(ax1, y_max_mep)
-    
-    ax1.set_xticks([])
-    ax1.set_xticklabels([])
-    ax1.set_ylabel('MEP Amplitude (µV)', 
-                  fontsize=PLOT_SETTINGS["axis_label_font_size"], 
-                  fontweight='normal',
-                  color='black',
-                  fontfamily='Arial',
-                  labelpad=20)
-    
-    ax1.grid(False)
-    ax1.set_axisbelow(True)
-    
-    for spine in ax1.spines.values():
-        spine.set_linewidth(PLOT_SETTINGS["spine_width"])
-    ax1.spines['top'].set_visible(False)
-    ax1.spines['right'].set_visible(False)
-    ax1.spines['left'].set_visible(True)
-    
-    # =============================================================================
-    # RIGHT SUBPLOT: NHPUES BAR PLOT (MODIFIED: 40% NARROWER BARS, HALF WIDTH PANEL)
-    # =============================================================================
-    
-    ax2.set_title('Mean NHPUES Scores', 
-                 fontsize=PLOT_SETTINGS["title_font_size"], 
-                 fontweight='bold', 
-                 color='#000000',
-                 family='Arial',
-                 pad=40)
-    
-    # Collect NHP data and scores
-    nhp_data = {}
-    for exp_name, exp_data in filtered_experiments.items():
-        config_exp = exp_data['config']
-        short_name = config_exp['short_name']
-        nhpues_score = map_nhp_to_scale_score(short_name)
-        
-        if short_name not in nhp_data:
-            nhp_data[short_name] = nhpues_score
-    
-    # Sort NHPs for consistent ordering
-    sorted_nhps = sorted(nhp_data.keys())
-    nhp_names = sorted_nhps
-    nhp_scores = [nhp_data[nhp] for nhp in sorted_nhps]
-    
-    # Create bar positions with extra spacing
-    bar_positions = np.arange(len(nhp_names))
-    bar_width = 0.36  # MODIFIED: Reduced from 0.6 to 0.36 (40% reduction)
-    
-    # Use the blue color from existing palette
-    bar_color = "#7BC8D9"
-    
-    # Create bars
-    bars = ax2.bar(bar_positions, nhp_scores, 
-                   width=bar_width, 
-                   color=bar_color,
-                   alpha=1.0,
-                   edgecolor='black',
-                   linewidth=2,
-                   zorder=5)
-    
-    # Set y-axis limits and formatting
-    y_max_bar = max(nhp_scores) * 1.2 if nhp_scores else 20
-    y_max_rounded_bar = int(np.ceil(y_max_bar / 2) * 2)  # Round to nearest 2
-    
-    # Configure axis ticks with 2-unit intervals
-    tick_interval = 2
-    major_ticks = np.arange(0, y_max_rounded_bar + tick_interval, tick_interval)
-    ax2.set_yticks(major_ticks)
-    ax2.set_ylim(0, y_max_rounded_bar)
-    
-    # Configure y-axis styling
-    ax2.yaxis.tick_left()
-    ax2.yaxis.set_label_position("left")
-    ax2.tick_params(axis='y', direction='in', length=8, width=2, 
-                    labelsize=PLOT_SETTINGS["tick_label_font_size"])
-    
-    # Add NHP labels below the x-axis
-    for i, (pos, name) in enumerate(zip(bar_positions, nhp_names)):
-        ax2.text(pos, -y_max_rounded_bar * 0.06, name, 
-                ha='center', va='top', 
-                fontsize=PLOT_SETTINGS["axis_label_font_size"],
-                fontweight='normal', color='black',
-                fontfamily='Arial')
-    
-    # Remove x-axis ticks and labels
-    ax2.set_xticks([])
-    ax2.set_xticklabels([])
-    ax2.tick_params(axis='x', length=0, width=0)
-    
-    # ADDED: Set x-axis limits with extra margin space for combined plot
-    left_margin = 0.6  # Space to the left of first bar
-    right_margin = 0.6  # Space to the right of last bar
-    ax2.set_xlim(-left_margin, len(bar_positions) - 1 + right_margin)
-    
-    # Set axis labels
-    ax2.set_ylabel('NHPUES Score (0-25)', 
-                  fontsize=PLOT_SETTINGS["axis_label_font_size"], 
-                  fontweight='normal',
-                  color='black',
-                  fontfamily='Arial',
-                  labelpad=20)
-    
-    # Configure spines
-    for spine in ax2.spines.values():
-        spine.set_linewidth(PLOT_SETTINGS["spine_width"])
-    ax2.spines['top'].set_visible(False)
-    ax2.spines['right'].set_visible(False)
-    ax2.spines['left'].set_visible(True)
-    ax2.spines['bottom'].set_visible(True)
-    
-    # Remove grid
-    ax2.grid(False)
-    ax2.set_axisbelow(True)
-    
-    # Set background color
-    ax2.set_facecolor(PLOT_SETTINGS["background_color"])
-    
-    # Enforce Arial font for all tick labels
-    for ax in [ax1, ax2]:
-        for label in ax.get_xticklabels():
-            label.set_fontfamily('Arial')
-        for label in ax.get_yticklabels():
-            label.set_fontfamily('Arial')
-            label.set_fontweight('normal')
-    
-    # Set background colors
-    fig.patch.set_facecolor(PLOT_SETTINGS["background_color"])
-    ax1.set_facecolor(PLOT_SETTINGS["background_color"])
-    
-    # Adjust layout - MODIFIED: Better spacing for 2:1 width ratio
-    plt.tight_layout()
-    plt.subplots_adjust(bottom=0.22, left=0.06, right=0.97, top=0.88, wspace=0.15)
-    
-    # Save the combined plot
-    plot_path = output_dir / 'combined_mep_nhpues_plot.png'
-    plt.savefig(plot_path, dpi=PLOT_SETTINGS["dpi"], 
-               bbox_inches='tight', facecolor='white',
-               edgecolor='none', pad_inches=0.3, transparent=False)
-    plt.show()
-    
-    print(f"✅ Combined MEP-NHPUES plot saved: {plot_path}")
-    print(f"📊 Left panel: MEP stroke hemisphere data (2/3 width)")
-    print(f"📊 Right panel: NHPUES functional assessment scores (1/3 width, narrower bars)")
-    
-    return fig
-
-# =============================================================================
-# 🎯 POSTER-OPTIMIZED CONFIGURATION - EDIT HERE TO CUSTOMIZE YOUR PLOTS
-# =============================================================================
-
-# MONKEY CONFIGURATION - Set to True to show, False to hide
-MONKEY_CONFIG = {
-    "Nov5_Olive": {
-        "show": True,
-        "color": "#FF69B4",
-        "name": "NHP1",
-        "mean_line_color": "black",
-        "mean_line_width": 6,
-        "mean_line_length": 0.35
-    },
-    "Nov5_Chive": {
-        "show": False,
-        "color": "#FF1493",
-        "name": "NHP3",
-        "mean_line_color": "black",
-        "mean_line_width": 6,
-        "mean_line_length": 0.35
-    },
-    "Nov5_Cheddar": {
-        "show": True,
-        "color": "#C71585",
-        "name": "NHP2",
-        "mean_line_color": "black",
-        "mean_line_width": 6,
-        "mean_line_length": 0.35
-    },
-    "Oct31_Chive": {
-        "show": True,
-        "color": "#FF69B4",
-        "name": "NHP3",
-        "mean_line_color": "black",
-        "mean_line_width": 6,
-        "mean_line_length": 0.35
-    },
-    "Oct31_Cheddar": {
-        "show": False,
-        "color": "#FF1493",
-        "name": "NHP2",
-        "mean_line_color": "black",
-        "mean_line_width": 6,
-        "mean_line_length": 0.35
-    }
-}
-
-# POSTER-OPTIMIZED PLOT SETTINGS
 PLOT_SETTINGS = {
-    # Visual Enhancement
-    "show_individual_points": False,
-    "show_mean_bars_only": True,
-    "show_legend": True,
-    "show_statistics": True,
-    "show_sample_sizes": True,
-    
-    # Size and Spacing (Poster Optimized)
     "figure_width": 25,
     "figure_height": 12,
     "title_font_size": 38,
@@ -330,76 +42,100 @@ PLOT_SETTINGS = {
     "tick_label_font_size": 30,
     "legend_font_size": 28,
     "muscle_group_spacing": 4,
-    
-    # Tick Configuration
+
     "y_tick_interval": 10,
     "use_major_minor_ticks": False,
-    "y_axis_max": 110,
-    
-    # Visual Elements
-    "mean_bar_width": 0.8,
-    "error_bar_thickness": 4,
-    "error_bar_cap_size": 8,
-    "significance_star_size": 28,
-    
-    # Data Processing
+    "y_axis_max": None,
+
+    "spine_width": 2,
+    "background_color": "white",
+    "dpi": 300,
+
     "remove_outliers": True,
     "outlier_method": "iqr_conservative",
     "outlier_upper_limit": 1000,
-    
-    # Grid and Styling
-    "grid_alpha": 0.0,
-    "spine_width": 2,
-    "background_color": "white",
-    "plot_facecolor": "white",
-    
-    # Statistics Display
-    "show_p_values": True,
-    "show_effect_sizes": True,
-    "stats_box_size": 16,
-    
-    # File Output
-    "save_stats_csv": True,
-    "save_stats_txt": True,
-    "dpi": 300,
 }
 
-# MUSCLE CONFIGURATION AND THEME
+# Which muscles to include
 MUSCLE_CONFIG = {
     "Bicep": True,
     "Brachioradialis": True,
-    "Abductor Pollicis Brevis": True
+    "Abductor Pollicis Brevis": True,
 }
 
 MUSCLE_COLORS = {
-    "Bicep": "#FFB3BA",                    
-    "Brachioradialis": "#FF7A92",          
-    "Abductor Pollicis Brevis": "#7BC8D9"  
+    "Bicep": "#FFB3BA",
+    "Brachioradialis": "#FF7A92",
+    "Abductor Pollicis Brevis": "#7BC8D9",
 }
 
-# Monkey markers
-MONKEY_MARKERS = {
-    "Olive": ("o", 150),
-    "Cheddar": ("o", 150),  
-    "Chive": ("o", 150),
-}
-
-# NHPUES SCORES FOR CORRELATION ANALYSIS
+# NHPUES scores (update Mely’s score!)
 NHPUES_SCORES = {
     "NHP1": 10.3846154,  # Olive
     "NHP2": 11.3076923,  # Cheddar
-    "NHP3": 15.2307692   # Chive
+    "NHP3": 15.2307692,  # Chive
+    "NHP4": 0.0,         # TODO: set Mely’s true score
+    "NHP5": 0.0,         # TODO: set Andy’s true score
 }
 
-# Mean scale scores for each NHP (original format for compatibility)
-MEAN_SCALE_SCORES = {
-    "Olive": 10.3846154,
-    "Cheddar": 11.3076923,
-    "Chive": 15.2307692
+# =============================================================================
+# MONKEY CONFIG
+# - name: must match NHPUES_SCORES keys if you want NHPUES plots
+# =============================================================================
+
+MONKEY_CONFIG = {
+    "Nov5_Olive": {
+        "show": True,
+        "color": "#E31A1C",
+        "name": "NHP1",
+        "mean_line_color": "black",
+        "mean_line_width": 6,
+        "mean_line_length": 0.45,
+    },
+    "Nov5_Cheddar": {
+        "show": True,
+        "color": "#33A02C",
+        "name": "NHP2",
+        "mean_line_color": "black",
+        "mean_line_width": 6,
+        "mean_line_length": 0.45,
+    },
+    "Oct31_Chive": {
+        "show": True,
+        "color": "#FF7F00",
+        "name": "NHP3",
+        "mean_line_color": "black",
+        "mean_line_width": 6,
+        "mean_line_length": 0.45,
+    },
+
+    # ✅ ADD: Dec1_Mely
+    "Dec1_Mely": {
+        "show": True,
+        "color": "#2E2E2E",
+        "name": "NHP4",
+        "mean_line_color": "black",
+        "mean_line_width": 6,
+        "mean_line_length": 0.45,
+    },
+     # ✅ ADD: Dec1_Andy
+    "Dec1_Andy": {
+        "show": True,
+        "color": "#2E2E2E",
+        "name": "NHP5",
+        "mean_line_color": "black",
+        "mean_line_width": 6,
+        "mean_line_length": 0.45,
+    },
+
+    # (Optional / keep as you had)
+    "Nov5_Chive": {"show": False, "color": "#1F78B4", "name": "NHP3", "mean_line_color": "black", "mean_line_width": 6, "mean_line_length": 0.45},
+    "Oct31_Cheddar": {"show": False, "color": "#6A3D9A", "name": "NHP2", "mean_line_color": "black", "mean_line_width": 6, "mean_line_length": 0.45},
 }
 
 # =============================================================================
 # ANALYSIS CONFIGS
+# - IMPORTANT: channels must match the amplitude columns in mep_results.csv
 # =============================================================================
 
 ANALYSIS_CONFIGS = {
@@ -409,39 +145,16 @@ ANALYSIS_CONFIGS = {
         "color": "#E31A1C",
         "show": True,
         "data_path": "Nov5_Olive/mep_results.csv",
-        "hemisphere_switch_time": 695.0,
         "healthy": {
             "channels": [2, 4, 7],
             "channel_names": ["Right Upper", "Right Forearm", "Right Hand"],
             "expected_pulses": 182,
-            "description": "Healthy Left Hemisphere → Right Muscles (0-695s)"
         },
         "stroke": {
             "channels": [8, 9, 11],
             "channel_names": ["Left Upper", "Left Forearm", "Left Hand"],
             "expected_pulses": 263,
-            "description": "Stroke Right Hemisphere → Left Muscles (695s-end)"
-        }
-    },
-    "Nov5_Chive": {
-        "description": "Nov5 Chive Experiment (Ch2,10 noisy)",
-        "short_name": "Chive",
-        "color": "#1F78B4",
-        "show": True,
-        "data_path": "Nov5_Chive/mep_results.csv",
-        "hemisphere_switch_time": 857.0,
-        "healthy": {
-            "channels": [9, 2, 8],
-            "channel_names": ["Right Upper", "Right Forearm", "Right Hand"],
-            "expected_pulses": 115,
-            "description": "Healthy Left Hemisphere → Right Muscles"
         },
-        "stroke": {
-            "channels": [4, 10, 7],
-            "channel_names": ["Left Upper", "Left Forearm", "Left Hand"],
-            "expected_pulses": 172,
-            "description": "Stroke Right Hemisphere → Left Muscles"
-        }
     },
     "Nov5_Cheddar": {
         "description": "Nov5 Cheddar Experiment",
@@ -449,941 +162,651 @@ ANALYSIS_CONFIGS = {
         "color": "#33A02C",
         "show": True,
         "data_path": "Nov5_Cheddar/mep_results.csv",
-        "hemisphere_switch_time": 650.0,
         "healthy": {
             "channels": [2, 4, 12],
             "channel_names": ["Right Upper", "Right Forearm", "Right Hand"],
             "expected_pulses": 105,
-            "description": "Healthy Left Hemisphere → Right Muscles"
         },
         "stroke": {
             "channels": [14, 9, 13],
             "channel_names": ["Left Upper", "Left Forearm", "Left Hand"],
             "expected_pulses": 195,
-            "description": "Stroke Right Hemisphere → Left Muscles"
-        }
+        },
     },
     "Oct31_Chive": {
         "description": "Oct31 Chive Experiment",
-        "short_name": "Oct31 Chive",
+        "short_name": "Chive",
         "color": "#FF7F00",
         "show": True,
         "data_path": "Oct31_Chive/mep_results.csv",
-        "hemisphere_switch_time": 930.0,
         "healthy": {
             "channels": [1, 2, 3],
             "channel_names": ["Right Upper", "Right Forearm", "Right Hand"],
             "expected_pulses": 85,
-            "description": "Healthy Left Hemisphere → Right Muscles"
         },
         "stroke": {
             "channels": [4, 5, 6],
             "channel_names": ["Left Upper", "Left Forearm", "Left Hand"],
             "expected_pulses": 205,
-            "description": "Stroke Right Hemisphere → Left Muscles"
-        }
+        },
     },
-    "Oct31_Cheddar": {
-        "description": "Oct31 Cheddar Experiment",
-        "short_name": "Oct31 Cheddar",
-        "color": "#6A3D9A",
+
+    # ✅ ADD: Dec1_Mely (your channel IDs from chan*.mat)
+    "Dec1_Mely": {
+        "description": "Dec 1 Mely Experiment",
+        "short_name": "Mely",
+        "color": "#2E2E2E",
         "show": True,
-        "data_path": "Oct31_Cheddar/mep_results.csv",
-        "hemisphere_switch_time": 500.0,
+        "data_path": "Dec1_Mely/mep_results.csv",
         "healthy": {
-            "channels": [1, 2, 3],
+            "channels": [130, 132, 135],
             "channel_names": ["Right Upper", "Right Forearm", "Right Hand"],
-            "expected_pulses": 85,
-            "description": "Healthy Left Hemisphere → Right Muscles"
+            "expected_pulses": 120,
         },
         "stroke": {
-            "channels": [4, 5, 6],
+            "channels": [139, 137, 136],
             "channel_names": ["Left Upper", "Left Forearm", "Left Hand"],
-            "expected_pulses": 254,
-            "description": "Stroke Right Hemisphere → Left Muscles"
-        }
-    }
+            "expected_pulses": 122,
+        },
+            "Dec1_Andy": {
+        "description": "Dec 1 Andy Experiment",
+        "short_name": "Andy",
+        "color": "#1F78B4",  # (optional) or keep "#2E2E2E" if you want
+        "show": True,
+        "data_path": "Dec1_Andy/mep_results.csv",
+        "healthy": {
+            # Andy mapping: Channel 7/4/2 -> 135/132/130
+            "channels": [135, 132, 130],
+            "channel_names": ["Right Upper", "Right Forearm", "Right Hand"],
+            "expected_pulses": 164,
+        },
+        "stroke": {
+            # Andy mapping: Channel 8/9/11 -> 136/137/139
+            "channels": [136, 137, 139],
+            "channel_names": ["Left Upper", "Left Forearm", "Left Hand"],
+            "expected_pulses": 121,
+        },
+    },
+        
+    },
 }
 
-# Update ANALYSIS_CONFIGS with MONKEY_CONFIG settings
+# Apply MONKEY_CONFIG overrides (show/color/labeling)
 for exp_name, monkey_settings in MONKEY_CONFIG.items():
     if exp_name in ANALYSIS_CONFIGS:
-        ANALYSIS_CONFIGS[exp_name]["short_name"] = monkey_settings["name"]
+        ANALYSIS_CONFIGS[exp_name]["short_name"] = monkey_settings["name"]  # NHP1/NHP2/...
         ANALYSIS_CONFIGS[exp_name]["color"] = monkey_settings["color"]
         ANALYSIS_CONFIGS[exp_name]["show"] = monkey_settings["show"]
         ANALYSIS_CONFIGS[exp_name]["mean_line_color"] = monkey_settings["mean_line_color"]
         ANALYSIS_CONFIGS[exp_name]["mean_line_width"] = monkey_settings["mean_line_width"]
         ANALYSIS_CONFIGS[exp_name]["mean_line_length"] = monkey_settings["mean_line_length"]
 
-# Set poster-optimized matplotlib style with Arial font - ENHANCED
-plt.style.use('default')
+# Matplotlib style
+plt.style.use("default")
 plt.rcParams.update({
-    'font.family': 'Arial',             # ENFORCED: Arial for all text
-    'font.size': PLOT_SETTINGS["tick_label_font_size"],
-    'axes.titlesize': PLOT_SETTINGS["title_font_size"],
-    'axes.labelsize': PLOT_SETTINGS["axis_label_font_size"],
-    'xtick.labelsize': PLOT_SETTINGS["tick_label_font_size"],
-    'ytick.labelsize': PLOT_SETTINGS["tick_label_font_size"],
-    'legend.fontsize': PLOT_SETTINGS["legend_font_size"],
-    'figure.titlesize': PLOT_SETTINGS["title_font_size"] + 4,
-    'font.weight': 'normal',
-    'axes.labelweight': 'bold',
-    'axes.titleweight': 'bold',
-    'figure.facecolor': PLOT_SETTINGS["background_color"],
-    'axes.facecolor': PLOT_SETTINGS["background_color"],
-    'savefig.facecolor': PLOT_SETTINGS["background_color"],
-    'savefig.dpi': PLOT_SETTINGS["dpi"],
-    # ADDITIONAL: Ensure Arial everywhere
-    'mathtext.fontset': 'custom',
-    'mathtext.rm': 'Arial',
-    'mathtext.it': 'Arial:italic',
-    'mathtext.bf': 'Arial:bold'
+    "font.family": "Arial",
+    "font.size": PLOT_SETTINGS["tick_label_font_size"],
+    "axes.titlesize": PLOT_SETTINGS["title_font_size"],
+    "axes.labelsize": PLOT_SETTINGS["axis_label_font_size"],
+    "xtick.labelsize": PLOT_SETTINGS["tick_label_font_size"],
+    "ytick.labelsize": PLOT_SETTINGS["tick_label_font_size"],
+    "legend.fontsize": PLOT_SETTINGS["legend_font_size"],
+    "figure.facecolor": PLOT_SETTINGS["background_color"],
+    "axes.facecolor": PLOT_SETTINGS["background_color"],
+    "savefig.facecolor": PLOT_SETTINGS["background_color"],
+    "savefig.dpi": PLOT_SETTINGS["dpi"],
 })
 
 # =============================================================================
-# UTILITY FUNCTIONS
+# UTILS
 # =============================================================================
 
-def configure_axis_ticks(ax, y_max):
-    """Configure axis ticks with 10-unit intervals and left-side y-axis with right-pointing ticks"""
-    
-    tick_interval = PLOT_SETTINGS["y_tick_interval"]
-    
-    if "y_axis_max" in PLOT_SETTINGS and PLOT_SETTINGS["y_axis_max"] is not None:
-        y_max_rounded = PLOT_SETTINGS["y_axis_max"]
+def get_muscle_color(muscle_name: str) -> str:
+    return MUSCLE_COLORS.get(muscle_name, "#999999")
+
+def map_nhp_to_scale_score(nhp_id: str) -> float:
+    return float(NHPUES_SCORES.get(nhp_id, 0.0))
+
+def configure_axis_ticks(ax, y_max, fixed_max=None):
+    """
+    If fixed_max is provided, use it.
+    Otherwise auto-scale to y_max with a sensible tick interval.
+    """
+    if fixed_max is not None:
+        y_top = float(fixed_max)
     else:
-        y_max_rounded = int(np.ceil(y_max / tick_interval) * tick_interval)
-    
-    major_ticks = np.arange(0, y_max_rounded + tick_interval, tick_interval)
-    ax.set_yticks(major_ticks)
-    
+        y_top = float(y_max)
+
+    # Choose tick step based on range
+    if y_top <= 120:
+        step = 10
+    elif y_top <= 300:
+        step = 25
+    elif y_top <= 700:
+        step = 50
+    else:
+        step = 100
+
+    y_max_rounded = float(np.ceil(y_top / step) * step)
+
+    ax.set_ylim(0, y_max_rounded)
+    ax.set_yticks(np.arange(0, y_max_rounded + step, step))
+
     ax.yaxis.tick_left()
     ax.yaxis.set_label_position("left")
-    ax.tick_params(axis='y', direction='in', length=8, width=2)
-    
-    if PLOT_SETTINGS.get("use_major_minor_ticks", True):
-        minor_ticks = np.arange(0, y_max_rounded + tick_interval, tick_interval / 2)
-        ax.set_yticks(minor_ticks, minor=True)
-        ax.tick_params(which='minor', length=4, color='gray', direction='in')
-        ax.tick_params(which='major', length=8, width=2, direction='in')
-    
-    ax.tick_params(axis='y', which='both', labelsize=PLOT_SETTINGS["tick_label_font_size"])
+    ax.tick_params(axis="y", direction="in", length=8, width=2)
+
     for label in ax.get_yticklabels():
-        label.set_fontweight('normal')
-        label.set_fontfamily('Arial')  # ENFORCED: Arial font
-    
-    ax.set_ylim(0, y_max_rounded)
+        label.set_fontweight("normal")
+        label.set_fontfamily("Arial")
+
     return y_max_rounded
 
-def get_muscle_color(muscle_name):
-    """Get the color for a specific muscle"""
-    return MUSCLE_COLORS.get(muscle_name, "#FF69B4")
 
-def get_darker_color(color_hex, factor=0.8):
-    """Make a color darker by the given factor"""
-    color_hex = color_hex.lstrip('#')
-    rgb = tuple(int(color_hex[i:i+2], 16) for i in (0, 2, 4))
-    darker_rgb = tuple(int(c * factor) for c in rgb)
-    return '#{:02x}{:02x}{:02x}'.format(*darker_rgb)
-
-def get_monkey_marker(monkey_name):
-    """Get the marker shape and size for a specific monkey"""
-    return MONKEY_MARKERS.get(monkey_name, ("o", 150))
-
-def map_nhp_to_scale_score(nhp_name):
-    """Map NHP names to their NHPUES scale scores"""
-    return NHPUES_SCORES.get(nhp_name, 0)
-
-def remove_extreme_outliers(data: pd.Series, method='iqr_conservative', upper_limit=1000) -> tuple:
-    """Remove extreme outliers using various methods"""
-    
+def remove_extreme_outliers(data: pd.Series, method="iqr_conservative", upper_limit=1000):
     if len(data) == 0:
         return data, pd.Series([], dtype=bool), {}
-    
+
     original_count = len(data)
-    
-    if method == 'iqr_conservative':
-        Q1 = data.quantile(0.25)
-        Q3 = data.quantile(0.75)
-        IQR = Q3 - Q1
-        
-        lower_bound = Q1 - 3.0 * IQR
-        upper_bound = Q3 + 3.0 * IQR
-        upper_bound = min(upper_bound, upper_limit)
-        
-        outlier_mask = (data < lower_bound) | (data > upper_bound)
-        
-    elif method == 'physiological':
-        outlier_mask = (data < 0) | (data > upper_limit)
-        
-    elif method == 'percentile':
-        lower_bound = data.quantile(0.01)
-        upper_bound = data.quantile(0.99)
-        upper_bound = min(upper_bound, upper_limit)
-        
-        outlier_mask = (data < lower_bound) | (data > upper_bound)
-    
-    clean_data = data[~outlier_mask]
-    removed_count = original_count - len(clean_data)
-    
-    removal_stats = {
-        'original_count': original_count,
-        'removed_count': removed_count,
-        'percent_removed': (removed_count / original_count * 100) if original_count > 0 else 0,
-        'method': method,
-        'upper_limit': upper_limit,
-        'final_range': (clean_data.min(), clean_data.max()) if len(clean_data) > 0 else (0, 0)
+
+    if method == "iqr_conservative":
+        q1 = data.quantile(0.25)
+        q3 = data.quantile(0.75)
+        iqr = q3 - q1
+        lower = q1 - 3.0 * iqr
+        upper = min(q3 + 3.0 * iqr, upper_limit)
+        mask = (data < lower) | (data > upper)
+    elif method == "physiological":
+        mask = (data < 0) | (data > upper_limit)
+    elif method == "percentile":
+        lower = data.quantile(0.01)
+        upper = min(data.quantile(0.99), upper_limit)
+        mask = (data < lower) | (data > upper)
+    else:
+        mask = pd.Series([False] * len(data), index=data.index)
+
+    clean = data[~mask]
+    removed = original_count - len(clean)
+
+    stats_info = {
+        "original_count": original_count,
+        "removed_count": removed,
+        "percent_removed": (removed / original_count * 100) if original_count else 0,
+        "method": method,
+        "upper_limit": upper_limit,
+        "final_range": (float(clean.min()), float(clean.max())) if len(clean) else (0.0, 0.0),
     }
-    
-    return clean_data, outlier_mask, removal_stats
+    return clean, mask, stats_info
+
+def detect_label_column(df: pd.DataFrame) -> str:
+    """Backward compatible: old files use 'hemisphere', new windowed use 'phase'."""
+    if "hemisphere" in df.columns:
+        return "hemisphere"
+    if "phase" in df.columns:
+        return "phase"
+    raise ValueError("CSV missing required label column: expected 'hemisphere' or 'phase'")
 
 # =============================================================================
-# DATA LOADING FUNCTIONS
+# DATA LOADING + STATS
 # =============================================================================
-
-def load_all_experiment_data(base_path: Path, outlier_method=None, upper_limit=None):
-    """Load and clean data from all experiments - FILTERED BY CONFIG"""
-    
-    if outlier_method is None:
-        outlier_method = PLOT_SETTINGS["outlier_method"]
-    if upper_limit is None:
-        upper_limit = PLOT_SETTINGS["outlier_upper_limit"]
-    
-    print("📊 LOADING EXPERIMENT DATA FOR POSTER ANALYSIS")
-    print("=" * 50)
-    
-    all_experiments = {}
-    muscle_names = [muscle for muscle, show in MUSCLE_CONFIG.items() if show]
-    filtered_configs = {k: v for k, v in ANALYSIS_CONFIGS.items() if v.get('show', True)}
-    
-    print(f"🐒 Active monkeys: {list(filtered_configs.keys())}")
-    print(f"💪 Active muscles: {muscle_names}")
-    print(f"🧹 Remove outliers: {PLOT_SETTINGS['remove_outliers']}")
-    
-    for exp_name, config in filtered_configs.items():
-        exp_path = base_path / config['data_path']
-        
-        if exp_path.exists():
-            print(f"📁 Loading {exp_name}...")
-            
-            df = pd.read_csv(exp_path)
-            healthy_data = df[df['hemisphere'] == 'healthy'].copy()
-            stroke_data = df[df['hemisphere'] == 'stroke'].copy()
-            
-            print(f"   ✅ {len(healthy_data)} healthy + {len(stroke_data)} stroke MEPs")
-            
-            exp_results = {
-                'config': config,
-                'muscle_data': {},
-                'cleaning_report': {},
-                'stats_results': {}
-            }
-            
-            for i, (healthy_ch, stroke_ch, muscle_name) in enumerate(zip(
-                config['healthy']['channels'],
-                config['stroke']['channels'],
-                ['Bicep', 'Brachioradialis', 'Abductor Pollicis Brevis']
-            )):
-                if muscle_name in muscle_names:
-                    healthy_col = f'ch{healthy_ch}_amplitude'
-                    stroke_col = f'ch{stroke_ch}_amplitude'
-                    
-                    healthy_raw = healthy_data[healthy_col].dropna() if healthy_col in healthy_data.columns else pd.Series([])
-                    stroke_raw = stroke_data[stroke_col].dropna() if stroke_col in stroke_data.columns else pd.Series([])
-                    
-                    if PLOT_SETTINGS['remove_outliers']:
-                        healthy_clean, _, healthy_stats = remove_extreme_outliers(healthy_raw, outlier_method, upper_limit)
-                        stroke_clean, _, stroke_stats = remove_extreme_outliers(stroke_raw, outlier_method, upper_limit)
-                    else:
-                        healthy_clean = healthy_raw.copy()
-                        stroke_clean = stroke_raw.copy()
-                        healthy_stats = {'original_count': len(healthy_raw), 'removed_count': 0, 'percent_removed': 0}
-                        stroke_stats = {'original_count': len(stroke_raw), 'removed_count': 0, 'percent_removed': 0}
-                    
-                    exp_results['muscle_data'][muscle_name] = {
-                        'healthy': healthy_clean,
-                        'stroke': stroke_clean,
-                        'healthy_raw': healthy_raw,
-                        'stroke_raw': stroke_raw,
-                        'healthy_channel': healthy_ch,
-                        'stroke_channel': stroke_ch,
-                        'healthy_name': config['healthy']['channel_names'][i],
-                        'stroke_name': config['stroke']['channel_names'][i]
-                    }
-                    
-                    exp_results['cleaning_report'][muscle_name] = {
-                        'healthy': healthy_stats,
-                        'stroke': stroke_stats
-                    }
-                    
-                    print(f"   {muscle_name}: H={len(healthy_clean)}/{len(healthy_raw)}, S={len(stroke_clean)}/{len(stroke_raw)}")
-            
-            exp_results['stats_results'] = calculate_experiment_statistics(exp_results['muscle_data'])
-            all_experiments[exp_name] = exp_results
-            
-        else:
-            print(f"⚠️ {exp_name} data not found at {exp_path}")
-    
-    return all_experiments
 
 def calculate_experiment_statistics(muscle_data: dict) -> dict:
-    """Calculate statistics for a single experiment"""
-    
-    stats_results = {}
-    
-    for muscle, data in muscle_data.items():
-        healthy = data['healthy']
-        stroke = data['stroke']
-        
+    out = {}
+    for muscle, d in muscle_data.items():
+        healthy = d["healthy"]
+        stroke = d["stroke"]
         if len(healthy) == 0 or len(stroke) == 0:
             continue
-        
+
         healthy_stats = {
-            'mean': healthy.mean(),
-            'std': healthy.std(),
-            'sem': healthy.std() / np.sqrt(len(healthy)),
-            'median': healthy.median(),
-            'n': len(healthy)
+            "mean": float(healthy.mean()),
+            "std": float(healthy.std()),
+            "sem": float(healthy.std() / np.sqrt(len(healthy))),
+            "median": float(healthy.median()),
+            "n": int(len(healthy)),
         }
-        
         stroke_stats = {
-            'mean': stroke.mean(),
-            'std': stroke.std(),
-            'sem': stroke.std() / np.sqrt(len(stroke)),
-            'median': stroke.median(),
-            'n': len(stroke)
+            "mean": float(stroke.mean()),
+            "std": float(stroke.std()),
+            "sem": float(stroke.std() / np.sqrt(len(stroke))),
+            "median": float(stroke.median()),
+            "n": int(len(stroke)),
         }
-        
+
         try:
-            statistic, p_value = stats.mannwhitneyu(healthy, stroke, alternative='two-sided')
-        except:
-            statistic, p_value = 0, 1.0
-        
-        mean_impairment = (1 - stroke_stats['mean'] / healthy_stats['mean']) * 100 if healthy_stats['mean'] > 0 else 0
-        
-        pooled_std = np.sqrt(((len(healthy) - 1) * np.var(healthy, ddof=1) + 
-                            (len(stroke) - 1) * np.var(stroke, ddof=1)) / 
-                           (len(healthy) + len(stroke) - 2))
-        cohens_d = (healthy_stats['mean'] - stroke_stats['mean']) / pooled_std if pooled_std > 0 else 0
-        
-        stats_results[muscle] = {
-            'healthy': healthy_stats,
-            'stroke': stroke_stats,
-            'p_value': p_value,
-            'mean_impairment_percent': mean_impairment,
-            'cohens_d': cohens_d,
-            'significant': p_value < 0.05,
-            'healthy_name': data['healthy_name'],
-            'stroke_name': data['stroke_name']
+            _, p = stats.mannwhitneyu(healthy, stroke, alternative="two-sided")
+        except Exception:
+            p = 1.0
+
+        mean_imp = (1 - stroke_stats["mean"] / healthy_stats["mean"]) * 100 if healthy_stats["mean"] > 0 else 0.0
+
+        pooled = np.sqrt(
+            ((len(healthy) - 1) * np.var(healthy, ddof=1) + (len(stroke) - 1) * np.var(stroke, ddof=1))
+            / (len(healthy) + len(stroke) - 2)
+        )
+        d_eff = (healthy_stats["mean"] - stroke_stats["mean"]) / pooled if pooled > 0 else 0.0
+
+        out[muscle] = {
+            "healthy": healthy_stats,
+            "stroke": stroke_stats,
+            "p_value": float(p),
+            "mean_impairment_percent": float(mean_imp),
+            "cohens_d": float(d_eff),
+            "significant": bool(p < 0.05),
+            "healthy_name": d["healthy_name"],
+            "stroke_name": d["stroke_name"],
         }
-    
-    return stats_results
+
+    return out
+
+def load_all_experiment_data(base_path: Path):
+    print("📊 LOADING EXPERIMENT DATA")
+    print("=" * 50)
+
+    muscle_names = [m for m, show in MUSCLE_CONFIG.items() if show]
+    filtered_configs = {k: v for k, v in ANALYSIS_CONFIGS.items() if v.get("show", True)}
+
+    print(f"🐒 Active experiments: {list(filtered_configs.keys())}")
+    print(f"💪 Active muscles: {muscle_names}")
+    print(f"🧹 Remove outliers: {PLOT_SETTINGS['remove_outliers']} ({PLOT_SETTINGS['outlier_method']})")
+
+    all_exps = {}
+
+    for exp_name, cfg in filtered_configs.items():
+        exp_path = base_path / cfg["data_path"]
+        if not exp_path.exists():
+            print(f"⚠️ Missing: {exp_name} at {exp_path}")
+            continue
+
+        print(f"📁 Loading {exp_name} -> {exp_path}")
+        df = pd.read_csv(exp_path)
+        label_col = detect_label_column(df)
+
+        healthy_df = df[df[label_col] == "healthy"].copy()
+        stroke_df = df[df[label_col] == "stroke"].copy()
+        print(f"   ✅ {len(healthy_df)} healthy + {len(stroke_df)} stroke rows")
+
+        exp_results = {
+            "config": cfg,
+            "muscle_data": {},
+            "cleaning_report": {},
+            "stats_results": {},
+        }
+
+        # Fixed muscle order for the 3 channels
+        muscle_order = ["Bicep", "Brachioradialis", "Abductor Pollicis Brevis"]
+
+        for i, (healthy_ch, stroke_ch, muscle_name) in enumerate(
+            zip(cfg["healthy"]["channels"], cfg["stroke"]["channels"], muscle_order)
+        ):
+            if muscle_name not in muscle_names:
+                continue
+
+            healthy_col = f"ch{healthy_ch}_amplitude"
+            stroke_col = f"ch{stroke_ch}_amplitude"
+
+            healthy_raw = healthy_df[healthy_col].dropna() if healthy_col in healthy_df.columns else pd.Series([], dtype=float)
+            stroke_raw = stroke_df[stroke_col].dropna() if stroke_col in stroke_df.columns else pd.Series([], dtype=float)
+
+            if PLOT_SETTINGS["remove_outliers"]:
+                healthy_clean, _, h_stats = remove_extreme_outliers(
+                    healthy_raw, PLOT_SETTINGS["outlier_method"], PLOT_SETTINGS["outlier_upper_limit"]
+                )
+                stroke_clean, _, s_stats = remove_extreme_outliers(
+                    stroke_raw, PLOT_SETTINGS["outlier_method"], PLOT_SETTINGS["outlier_upper_limit"]
+                )
+            else:
+                healthy_clean, stroke_clean = healthy_raw.copy(), stroke_raw.copy()
+                h_stats = {"original_count": len(healthy_raw), "removed_count": 0, "percent_removed": 0}
+                s_stats = {"original_count": len(stroke_raw), "removed_count": 0, "percent_removed": 0}
+
+            exp_results["muscle_data"][muscle_name] = {
+                "healthy": healthy_clean,
+                "stroke": stroke_clean,
+                "healthy_raw": healthy_raw,
+                "stroke_raw": stroke_raw,
+                "healthy_channel": healthy_ch,
+                "stroke_channel": stroke_ch,
+                "healthy_name": cfg["healthy"]["channel_names"][i],
+                "stroke_name": cfg["stroke"]["channel_names"][i],
+            }
+
+            exp_results["cleaning_report"][muscle_name] = {"healthy": h_stats, "stroke": s_stats}
+            print(f"   {muscle_name}: H={len(healthy_clean)}/{len(healthy_raw)}, S={len(stroke_clean)}/{len(stroke_raw)}")
+
+        exp_results["stats_results"] = calculate_experiment_statistics(exp_results["muscle_data"])
+        all_exps[exp_name] = exp_results
+
+    return all_exps
 
 # =============================================================================
-# PLOTTING FUNCTIONS
+# PLOTS
 # =============================================================================
+
+def create_group_stroke_points_plot(all_experiments: dict, output_dir: Path):
+    print("\n📊 GROUP: STROKE PLOT (POINTS + MEAN)")
+    print("=" * 55)
+
+    filtered = {k: v for k, v in all_experiments.items() if ANALYSIS_CONFIGS[k].get("show", True)}
+    muscle_names = [m for m, show in MUSCLE_CONFIG.items() if show]
+    if not filtered:
+        print("❌ No experiments selected")
+        return None
+
+    fig, ax = plt.subplots(1, 1, figsize=(PLOT_SETTINGS["figure_width"], PLOT_SETTINGS["figure_height"]))
+    ax.set_title("MEPs in Stroke-Affected Hemispheres", fontsize=PLOT_SETTINGS["title_font_size"], fontweight="bold", pad=40)
+
+    n_exp = len(filtered)
+    n_muscle = len(muscle_names)
+
+    monkey_base_positions = np.arange(n_exp) * PLOT_SETTINGS["muscle_group_spacing"]
+    muscle_width = 1.2
+    total_muscle_width = (n_muscle - 1) * muscle_width
+    muscle_offsets = np.linspace(-total_muscle_width / 2, total_muscle_width / 2, n_muscle)
+
+    # y-limit
+    all_stroke_vals = []
+    for exp in filtered.values():
+        for m in muscle_names:
+            if m in exp["muscle_data"]:
+                all_stroke_vals.extend(exp["muscle_data"][m]["stroke"].tolist())
+    y_max = max(all_stroke_vals) * 1.2 if all_stroke_vals else 100.0
+
+    # plot
+    for monkey_idx, (exp_name, exp_data) in enumerate(filtered.items()):
+        cfg = exp_data["config"]
+        nhp_label = cfg["short_name"]
+        monkey_x = monkey_base_positions[monkey_idx]
+
+        for muscle_idx, muscle in enumerate(muscle_names):
+            if muscle not in exp_data["muscle_data"] or muscle not in exp_data["stats_results"]:
+                continue
+
+            stroke_data = exp_data["muscle_data"][muscle]["stroke"]
+            stroke_stats = exp_data["stats_results"][muscle]["stroke"]
+            color = get_muscle_color(muscle)
+
+            if len(stroke_data) == 0:
+                continue
+
+            x_center = monkey_x + muscle_offsets[muscle_idx]
+            jitter = np.random.uniform(-0.4, 0.4, len(stroke_data))
+            x_coords = np.full(len(stroke_data), x_center) + jitter
+
+            ax.scatter(x_coords, stroke_data, color=color, alpha=1.0, s=200, marker="o",
+                       edgecolors=color, linewidth=2, zorder=5)
+
+            mean_val = stroke_stats["mean"]
+            mlw = cfg.get("mean_line_length", 0.45)
+            ax.plot([x_center - mlw, x_center + mlw], [mean_val, mean_val],
+                    color=cfg.get("mean_line_color", "black"),
+                    linewidth=cfg.get("mean_line_width", 6),
+                    solid_capstyle="round", zorder=10)
+
+            muscle_label = "APB" if muscle == "Abductor Pollicis Brevis" else muscle
+            ax.text(x_center, -y_max * 0.06, muscle_label, ha="center", va="top",
+                    fontsize=PLOT_SETTINGS["tick_label_font_size"], color="black")
+
+        ax.text(monkey_x, -y_max * 0.15, nhp_label, ha="center", va="top",
+                fontsize=PLOT_SETTINGS["axis_label_font_size"], fontweight="bold", color="black")
+
+    # axes formatting
+    margin_ratio = 0.25
+    total_width = monkey_base_positions[-1] if len(monkey_base_positions) else PLOT_SETTINGS["muscle_group_spacing"]
+    ax.set_xlim(-total_width * margin_ratio, total_width + total_width * margin_ratio)
+
+    configure_axis_ticks(ax, y_max)
+    ax.set_xticks([])
+    ax.set_ylabel("MEP Amplitude (µV)", fontsize=PLOT_SETTINGS["axis_label_font_size"], labelpad=20)
+    ax.grid(False)
+
+    for spine in ax.spines.values():
+        spine.set_linewidth(PLOT_SETTINGS["spine_width"])
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.tight_layout()
+    plt.subplots_adjust(bottom=0.22, left=0.1, right=0.95, top=0.88)
+
+    out = output_dir / "poster_stroke_individual_points.png"
+    plt.savefig(out, dpi=PLOT_SETTINGS["dpi"], bbox_inches="tight", facecolor="white", edgecolor="none", pad_inches=0.2)
+    plt.show()
+    print(f"✅ Saved: {out}")
+    return fig
+
+def create_individual_stroke_plot_per_nhp(all_experiments: dict, output_dir: Path):
+    """
+    One figure per experiment/NHP showing stroke-only points + mean lines per muscle.
+    Fixes:
+      - No negative-y text (prevents massive whitespace in saved PNG)
+      - Auto y-axis scaling (prevents clipping for Mely)
+      - Uses normal x-ticks for muscle labels
+    """
+    print("\n📸 INDIVIDUAL: STROKE PLOTS (ONE PER NHP)")
+    print("=" * 55)
+
+    muscle_names = [m for m, show in MUSCLE_CONFIG.items() if show]
+    filtered = {k: v for k, v in all_experiments.items() if ANALYSIS_CONFIGS[k].get("show", True)}
+    if not filtered:
+        print("❌ No experiments selected")
+        return
+
+    # Pretty labels
+    def muscle_label(m):
+        return "APB" if m == "Abductor Pollicis Brevis" else m
+
+    for exp_name, exp_data in filtered.items():
+        cfg = exp_data["config"]
+        nhp_label = cfg["short_name"]
+
+        fig, ax = plt.subplots(1, 1, figsize=(PLOT_SETTINGS["figure_width"], PLOT_SETTINGS["figure_height"]))
+        ax.set_title(f"Stroke Hemisphere MEPs — {nhp_label}",
+                     fontsize=PLOT_SETTINGS["title_font_size"], fontweight="bold", pad=30)
+
+        # Gather stroke values for y scaling
+        stroke_vals = []
+        for m in muscle_names:
+            if m in exp_data["muscle_data"]:
+                stroke_vals.extend(exp_data["muscle_data"][m]["stroke"].tolist())
+
+        if len(stroke_vals) == 0:
+            print(f"⚠️ No stroke data for {exp_name}")
+            plt.close(fig)
+            continue
+
+        # Auto y max with a bit of headroom
+        y_max = float(np.nanmax(stroke_vals)) * 1.15
+
+        # X positions
+        x_centers = np.arange(len(muscle_names))
+
+        for i, muscle in enumerate(muscle_names):
+            if muscle not in exp_data["muscle_data"] or muscle not in exp_data["stats_results"]:
+                continue
+
+            stroke_data = exp_data["muscle_data"][muscle]["stroke"]
+            if len(stroke_data) == 0:
+                continue
+
+            stroke_stats = exp_data["stats_results"][muscle]["stroke"]
+            color = get_muscle_color(muscle)
+
+            x_center = x_centers[i]
+            jitter = np.random.uniform(-0.18, 0.18, len(stroke_data))
+            x_coords = np.full(len(stroke_data), x_center) + jitter
+
+            ax.scatter(
+                x_coords, stroke_data,
+                color=color, alpha=1.0, s=220, marker="o",
+                edgecolors=color, linewidth=2, zorder=5
+            )
+
+            # Mean line
+            mean_val = stroke_stats["mean"]
+            half_len = 0.22
+            ax.plot(
+                [x_center - half_len, x_center + half_len],
+                [mean_val, mean_val],
+                color=cfg.get("mean_line_color", "black"),
+                linewidth=cfg.get("mean_line_width", 6),
+                solid_capstyle="round", zorder=10
+            )
+
+        # Axes formatting
+        ax.set_xlim(-0.6, len(muscle_names) - 1 + 0.6)
+
+        # AUTO ticks for individual plots (do NOT force 110)
+        configure_axis_ticks(ax, y_max, fixed_max=None)
+
+        ax.set_ylabel("MEP Amplitude (µV)",
+                      fontsize=PLOT_SETTINGS["axis_label_font_size"],
+                      fontweight="normal",
+                      labelpad=18)
+
+        ax.set_xticks(x_centers)
+        ax.set_xticklabels([muscle_label(m) for m in muscle_names], fontfamily="Arial")
+        ax.tick_params(axis="x", length=0, labelsize=PLOT_SETTINGS["tick_label_font_size"])
+
+        ax.grid(False)
+        for spine in ax.spines.values():
+            spine.set_linewidth(PLOT_SETTINGS["spine_width"])
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        plt.tight_layout()
+        plt.subplots_adjust(bottom=0.14, left=0.10, right=0.95, top=0.88)
+
+        out = output_dir / f"stroke_points_{exp_name}.png"
+        plt.savefig(out, dpi=PLOT_SETTINGS["dpi"], bbox_inches="tight",
+                    facecolor="white", edgecolor="none", pad_inches=0.2)
+        plt.show()
+        print(f"✅ Saved: {out}")
+
 
 def create_mean_nhpues_bar_plot(all_experiments: dict, output_dir: Path):
-    """Create mean NHPUES bar plot matching the style of other graphs"""
-    
-    print("\n📊 CREATING MEAN NHPUES BAR PLOT")
+    print("\n📊 NHPUES BAR PLOT")
     print("=" * 40)
-    
-    filtered_experiments = {k: v for k, v in all_experiments.items() if ANALYSIS_CONFIGS[k].get('show', True)}
-    muscle_names = [muscle for muscle, show in MUSCLE_CONFIG.items() if show]
-    
-    if not filtered_experiments:
+
+    filtered = {k: v for k, v in all_experiments.items() if ANALYSIS_CONFIGS[k].get("show", True)}
+    if not filtered:
         print("❌ No experiments selected")
         return None
-    
-    # Create figure with same dimensions as other plots
+
+    # One bar per NHP label
+    nhps = []
+    scores = []
+    for exp_name, exp_data in filtered.items():
+        nhp_label = exp_data["config"]["short_name"]
+        if nhp_label not in nhps:
+            nhps.append(nhp_label)
+            scores.append(map_nhp_to_scale_score(nhp_label))
+
+    # sort for stable order
+    order = np.argsort(nhps)
+    nhps = [nhps[i] for i in order]
+    scores = [scores[i] for i in order]
+
     fig, ax = plt.subplots(1, 1, figsize=(PLOT_SETTINGS["figure_width"], PLOT_SETTINGS["figure_height"]))
-    
-    # Set title matching other plots
-    ax.set_title('Mean NHPUES Scores', 
-                fontsize=PLOT_SETTINGS["title_font_size"], 
-                fontweight='bold', 
-                color='#000000',
-                family='Arial',
-                pad=40)
-    
-    # Collect NHP data and scores
-    nhp_data = {}
-    for exp_name, exp_data in filtered_experiments.items():
-        config_exp = exp_data['config']
-        short_name = config_exp['short_name']
-        nhpues_score = map_nhp_to_scale_score(short_name)
-        
-        if short_name not in nhp_data:
-            nhp_data[short_name] = nhpues_score
-    
-    # Sort NHPs for consistent ordering (NHP1, NHP2, NHP3)
-    sorted_nhps = sorted(nhp_data.keys())
-    nhp_names = sorted_nhps
-    nhp_scores = [nhp_data[nhp] for nhp in sorted_nhps]
-    
-    # Create bar positions
-    bar_positions = np.arange(len(nhp_names))
-    bar_width = 0.36  # MODIFIED: Reduced from 0.6 to 0.36 (40% reduction)
-    
-    # Use the blue color from your existing palette
-    bar_color = "#7BC8D9"  # This is the blue color from your MUSCLE_COLORS
-    
-    # Create bars
-    bars = ax.bar(bar_positions, nhp_scores, 
-                  width=bar_width, 
-                  color=bar_color,
-                  alpha=1.0,
-                  edgecolor='black',
-                  linewidth=2,
-                  zorder=5)
-    
-    # Set y-axis limits and formatting to match other plots
-    y_max = max(nhp_scores) * 1.2 if nhp_scores else 20
-    y_max_rounded = int(np.ceil(y_max / 2) * 2)  # Round to nearest 2
-    
-    # Configure axis ticks similar to other plots
-    tick_interval = 2  # Use 2-unit intervals for NHPUES scores
-    major_ticks = np.arange(0, y_max_rounded + tick_interval, tick_interval)
-    ax.set_yticks(major_ticks)
-    
-    ax.set_ylim(0, y_max_rounded)
-    
-    # Configure y-axis styling to match other plots
-    ax.yaxis.tick_left()
-    ax.yaxis.set_label_position("left")
-    ax.tick_params(axis='y', direction='in', length=8, width=2, 
-                   labelsize=PLOT_SETTINGS["tick_label_font_size"])
-    
-    # Add NHP labels below the x-axis (similar to other plots)
-    for i, (pos, name) in enumerate(zip(bar_positions, nhp_names)):
-        ax.text(pos, -y_max_rounded * 0.08, name, 
-               ha='center', va='top', 
-               fontsize=PLOT_SETTINGS["axis_label_font_size"],
-               fontweight='bold', color='black',
-               fontfamily='Arial')
-    
-    # Remove x-axis ticks and labels since we're using custom text labels
+    ax.set_title("Mean NHPUES Scores", fontsize=PLOT_SETTINGS["title_font_size"], fontweight="bold", pad=40)
+
+    x = np.arange(len(nhps))
+    bar_width = 0.36
+    ax.bar(x, scores, width=bar_width, color="#7BC8D9", edgecolor="black", linewidth=2)
+
+    y_max = max(scores) * 1.2 if scores else 20
+    y_max_round = int(np.ceil(y_max / 2) * 2)
+    ax.set_ylim(0, y_max_round)
+    ax.set_yticks(np.arange(0, y_max_round + 2, 2))
+    ax.tick_params(axis="y", direction="in", length=8, width=2)
+
+    for i, name in enumerate(nhps):
+        ax.text(i, -y_max_round * 0.08, name, ha="center", va="top",
+                fontsize=PLOT_SETTINGS["axis_label_font_size"], fontweight="bold")
+
     ax.set_xticks([])
-    ax.set_xticklabels([])
-    ax.tick_params(axis='x', length=0, width=0)
-    
-    # Set axis labels
-    ax.set_ylabel('NHPUES Score (0-25)', 
-                 fontsize=PLOT_SETTINGS["axis_label_font_size"], 
-                 fontweight='normal',
-                 color='black',
-                 fontfamily='Arial',
-                 labelpad=20)
-    
-    # Configure spines to match other plots
+    ax.set_ylabel("NHPUES Score (0-25)", fontsize=PLOT_SETTINGS["axis_label_font_size"], labelpad=20)
+
     for spine in ax.spines.values():
         spine.set_linewidth(PLOT_SETTINGS["spine_width"])
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_visible(True)
-    ax.spines['bottom'].set_visible(True)
-    
-    # ADDED: Set x-axis limits with extra margin space
-    left_margin = 0.6  # Space to the left of first bar
-    right_margin = 0.6  # Space to the right of last bar
-    ax.set_xlim(-left_margin, len(bar_positions) - 1 + right_margin)
-    
-    # Remove grid to match other plots
-    ax.grid(False)
-    ax.set_axisbelow(True)
-    
-    # Set background color
-    ax.set_facecolor(PLOT_SETTINGS["background_color"])
-    fig.patch.set_facecolor(PLOT_SETTINGS["background_color"])
-    
-    # Enforce Arial font for all tick labels
-    for label in ax.get_xticklabels():
-        label.set_fontfamily('Arial')
-    for label in ax.get_yticklabels():
-        label.set_fontfamily('Arial')
-        label.set_fontweight('normal')
-    
-    # Adjust layout to match other graphs with proper x-axis spacing
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
     plt.tight_layout()
     plt.subplots_adjust(bottom=0.22, left=0.12, right=0.95, top=0.88)
-    
-    # Save the plot
-    plot_path = output_dir / 'mean_nhpues_bar_plot.png'
-    plt.savefig(plot_path, dpi=PLOT_SETTINGS["dpi"], 
-               bbox_inches='tight', facecolor='white',
-               edgecolor='none', pad_inches=0.3, transparent=False)
+
+    out = output_dir / "mean_nhpues_bar_plot.png"
+    plt.savefig(out, dpi=PLOT_SETTINGS["dpi"], bbox_inches="tight", facecolor="white", edgecolor="none", pad_inches=0.3)
     plt.show()
-    
-    print(f"✅ Mean NHPUES bar plot saved: {plot_path}")
-    print(f"📊 NHPUES Scores (bars 40% narrower):")
-    for nhp, score in zip(nhp_names, nhp_scores):
-        print(f"   {nhp}: {score:.1f}")
-    
+    print(f"✅ Saved: {out}")
     return fig
 
-def create_poster_stroke_points_plot(all_experiments: dict, output_dir: Path):
-    """Create clean stroke hemisphere plot with individual points and clear means - optimized for poster"""
-    
-    print("\n📊 CREATING POSTER STROKE PLOT WITH INDIVIDUAL POINTS")
-    print("=" * 55)
-    
-    filtered_experiments = {k: v for k, v in all_experiments.items() if ANALYSIS_CONFIGS[k].get('show', True)}
-    muscle_names = [muscle for muscle, show in MUSCLE_CONFIG.items() if show]
-    
-    if not filtered_experiments:
-        print("❌ No experiments selected")
-        return None
-    
-    fig, ax = plt.subplots(1, 1, figsize=(PLOT_SETTINGS["figure_width"], PLOT_SETTINGS["figure_height"]))
-    
-    ax.set_title('MEPs in Stroke-Affected Hemispheres', 
-                fontsize=PLOT_SETTINGS["title_font_size"], 
-                fontweight='bold', 
-                color='#000000',
-                family='Arial',
-                pad=40)
-    
-    n_experiments = len(filtered_experiments)
-    n_muscles = len(muscle_names)
-    
-    monkey_base_positions = np.arange(n_experiments) * PLOT_SETTINGS["muscle_group_spacing"]
-    muscle_width = 1.2
-    total_muscle_width = (n_muscles - 1) * muscle_width
-    muscle_offsets = np.linspace(-total_muscle_width/2, total_muscle_width/2, n_muscles)
-    
-    all_stroke_data = []
-    for exp_data in filtered_experiments.values():
-        for muscle in muscle_names:
-            if muscle in exp_data['muscle_data']:
-                all_stroke_data.extend(exp_data['muscle_data'][muscle]['stroke'].tolist())
-    
-    y_max = max(all_stroke_data) * 1.2 if all_stroke_data else 100
-    
-    for monkey_idx, (exp_name, exp_data) in enumerate(filtered_experiments.items()):
-        config_exp = exp_data['config']
-        short_name = config_exp['short_name']
-        monkey_marker_info = get_monkey_marker(short_name)
-        monkey_marker = monkey_marker_info[0]
-        monkey_size = monkey_marker_info[1]
-        monkey_x = monkey_base_positions[monkey_idx]
-        
-        for muscle_idx, muscle in enumerate(muscle_names):
-            if muscle in exp_data['muscle_data'] and muscle in exp_data['stats_results']:
-                stroke_data = exp_data['muscle_data'][muscle]['stroke']
-                stroke_stats = exp_data['stats_results'][muscle]['stroke']
-                muscle_color = get_muscle_color(muscle)
-                
-                if len(stroke_data) > 0:
-                    x_center = monkey_x + muscle_offsets[muscle_idx]
-                    
-                    jitter_width = 0.4
-                    jitter = np.random.uniform(-jitter_width, jitter_width, len(stroke_data))
-                    x_coords = np.full(len(stroke_data), x_center) + jitter
-                    
-                    ax.scatter(x_coords, stroke_data, 
-                              color=muscle_color, alpha=1, s=200,
-                              marker='o', edgecolors=muscle_color,
-                              linewidth=2, zorder=5)
-                    
-                    # Mean line
-                    mean_val = stroke_stats['mean']
-                    mean_line_width = 0.45
-                    ax.plot([x_center - mean_line_width, x_center + mean_line_width], 
-                           [mean_val, mean_val], 
-                           color='black', linewidth=6,
-                           solid_capstyle='round', zorder=10)
-                    
-                    muscle_label = "APB" if muscle == "Abductor Pollicis Brevis" else muscle
-                    ax.text(x_center, -y_max * 0.06, muscle_label, 
-                           ha='center', va='top', 
-                           fontsize=PLOT_SETTINGS["tick_label_font_size"],
-                           fontweight='normal', color='black',
-                           fontfamily='Arial')
-        
-        ax.text(monkey_x, -y_max * 0.15, short_name, 
-               ha='center', va='top', 
-               fontsize=PLOT_SETTINGS["axis_label_font_size"],
-               fontweight='bold', color='black',
-               fontfamily='Arial')
-    
-    margin_ratio = 0.25
-    total_width = monkey_base_positions[-1] if len(monkey_base_positions) > 0 else PLOT_SETTINGS["muscle_group_spacing"]
-    left_margin = total_width * margin_ratio
-    right_margin = total_width * margin_ratio
-    
-    ax.set_xlim(-left_margin, total_width + right_margin)
-    
-    y_max_rounded = configure_axis_ticks(ax, y_max)
-    
-    ax.set_xticks([])
-    ax.set_xticklabels([])
-    ax.set_ylabel('MEP Amplitude (µV)', 
-                 fontsize=PLOT_SETTINGS["axis_label_font_size"], 
-                 fontweight='normal',
-                 color='black',
-                 fontfamily='Arial',
-                 labelpad=20)
-    
-    # ENFORCED: Arial font for all tick labels
-    for label in ax.get_xticklabels():
-        label.set_fontfamily('Arial')
-    for label in ax.get_yticklabels():
-        label.set_fontfamily('Arial')
-    
-    ax.grid(False)
-    ax.set_axisbelow(True)
-    
-    for spine in ax.spines.values():
-        spine.set_linewidth(PLOT_SETTINGS["spine_width"])
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_visible(True)
-    
-    plt.tight_layout()
-    plt.subplots_adjust(bottom=0.22, left=0.1, right=0.95, top=0.85)
-    
-    plot_path = output_dir / 'poster_stroke_individual_points.png'
-    plt.savefig(plot_path, dpi=PLOT_SETTINGS["dpi"], 
-               bbox_inches='tight', facecolor='white',
-               edgecolor='none', pad_inches=0.2, transparent=False)
-    plt.show()
-    
-    print(f"✅ Poster stroke plot with individual points saved: {plot_path}")
-    return fig
+def print_summary(all_experiments: dict):
+    print("\n" + "=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
 
-def create_mep_nhpues_correlation_plot(all_experiments: dict, output_dir: Path):
-    """Create MEP-NHPUES correlation plot with FIXED systematic offsets and proper spacing"""
-    
-    print("\n📊 CREATING MEP-NHPUES CORRELATION ANALYSIS")
-    print("=" * 55)
-    
-    filtered_experiments = {k: v for k, v in all_experiments.items() if ANALYSIS_CONFIGS[k].get('show', True)}
-    muscle_names = [muscle for muscle, show in MUSCLE_CONFIG.items() if show]
-    
-    if not filtered_experiments:
-        print("❌ No experiments selected")
-        return None
-    
-    fig, ax = plt.subplots(1, 1, figsize=(PLOT_SETTINGS["figure_width"], PLOT_SETTINGS["figure_height"]))
-    
-    ax.set_title('Relationship Between MEP Amplitudes and NHPUES Scores', 
-                fontsize=PLOT_SETTINGS["title_font_size"], 
-                fontweight='bold', 
-                color='#000000',
-                family='Arial',
-                pad=40)
-    
-    # Prepare correlation data
-    correlation_data = []
-    
-    for exp_name, exp_data in filtered_experiments.items():
-        config_exp = exp_data['config']
-        short_name = config_exp['short_name']
-        stats_results = exp_data['stats_results']
-        
-        nhpues_score = map_nhp_to_scale_score(short_name)
-        
-        for muscle_idx, muscle in enumerate(muscle_names):
-            if muscle in stats_results:
-                stroke_stats = stats_results[muscle]['stroke']
-                mep_amplitude = stroke_stats['mean']
-                
-                correlation_data.append({
-                    'nhp': short_name,
-                    'nhpues': nhpues_score,
-                    'mep_amplitude': mep_amplitude,
-                    'muscle': muscle,
-                    'muscle_color': get_muscle_color(muscle)
-                })
-    
-    # Define shapes and sizes for each NHP
-    nhp_shapes = {'NHP1': 'o', 'NHP2': 's', 'NHP3': '^'}
-    nhp_sizes = {'NHP1': 800, 'NHP2': 720, 'NHP3': 800}
-    
-    # Plot data points with systematic offsets
-    muscle_offsets = {
-        "Bicep": (-0.15, 0.3),
-        "Brachioradialis": (0, 0),
-        "Abductor Pollicis Brevis": (0.15, -0.3)
-    }
-    
-    for muscle in muscle_names:
-        muscle_data = [d for d in correlation_data if d['muscle'] == muscle]
-        muscle_color = get_muscle_color(muscle)
-        
-        for data_point in muscle_data:
-            nhp = data_point['nhp']
-            marker_shape = nhp_shapes.get(nhp, 'o')
-            marker_size = nhp_sizes.get(nhp, 800)
-            
-            # Apply systematic offset based on muscle type
-            x_offset, y_offset = muscle_offsets.get(muscle, (0, 0))
-            
-            ax.scatter(data_point['nhpues'] + x_offset, data_point['mep_amplitude'] + y_offset,
-                      c=muscle_color, marker=marker_shape, s=marker_size,
-                      alpha=0.9, edgecolors='black', linewidth=3, zorder=5)
-    
-    # Calculate correlations
-    correlations = {}
-    for muscle in muscle_names:
-        muscle_data = [d for d in correlation_data if d['muscle'] == muscle]
-        if len(muscle_data) >= 2:
-            x_vals = [d['nhpues'] for d in muscle_data]
-            y_vals = [d['mep_amplitude'] for d in muscle_data]
-            
-            if len(x_vals) > 1 and np.std(x_vals) > 0 and np.std(y_vals) > 0:
-                correlation = np.corrcoef(x_vals, y_vals)[0, 1]
-            else:
-                correlation = 0
-            correlations[muscle] = correlation
-    
-    # Configure axes
-    if correlation_data:
-        mep_values = [d['mep_amplitude'] for d in correlation_data]
-        
-        x_min, x_max = 8.97, 17
-        y_min, y_max = 0, max(mep_values) * 1.2 if mep_values else 25
-        
-        ax.set_xlim(x_min, x_max)
-        ax.set_ylim(y_min, y_max)
-    
-    # Set axis labels
-    ax.set_xlabel('Mean NHPUES Score', 
-                 fontsize=PLOT_SETTINGS["axis_label_font_size"], 
-                 fontweight='normal',
-                 color='black',
-                 fontfamily='Arial',
-                 labelpad=25)
-    
-    ax.set_ylabel('Mean MEP Amplitude (µV)', 
-                 fontsize=PLOT_SETTINGS["axis_label_font_size"], 
-                 fontweight='normal',
-                 color='black',
-                 fontfamily='Arial',
-                 labelpad=25)
-    
-    # Clean axes styling
-    ax.grid(False)
-    ax.set_axisbelow(True)
-    
-    # Configure ticks
-    ax.tick_params(axis='y', direction='in', length=8, width=2, labelsize=PLOT_SETTINGS["tick_label_font_size"])
-    ax.tick_params(axis='x', direction='in', length=0, width=0, labelsize=PLOT_SETTINGS["tick_label_font_size"])
-    
-    # Set Arial font for tick labels
-    for label in ax.get_yticklabels():
-        label.set_fontweight('normal')
-        label.set_fontfamily('Arial')
-    for label in ax.get_xticklabels():
-        label.set_fontweight('normal')
-        label.set_fontfamily('Arial')
-    
-    # Configure spines
-    for spine in ax.spines.values():
-        spine.set_linewidth(PLOT_SETTINGS["spine_width"])
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    
-    # Add legend
-    if PLOT_SETTINGS["show_legend"]:
-        legend_elements = []
-        
-        # Add muscle groups with correlation values
-        for muscle in muscle_names:
-            muscle_color = get_muscle_color(muscle)
-            display_name = "APB" if muscle == "Abductor Pollicis Brevis" else "Brachioradialis" if muscle == "Brachioradialis" else muscle
-            correlation_val = correlations.get(muscle, 0)
-            
-            legend_elements.append(
-                plt.Line2D([0], [0], marker='o', color='w', 
-                          markerfacecolor=muscle_color, markersize=25,
-                          markeredgecolor='black', markeredgewidth=3,
-                          label=f'{display_name} (r={correlation_val:.2f})', 
-                          linestyle='None')
-            )
-        
-        # Add separator
-        legend_elements.append(plt.Line2D([0], [0], color='white', label=''))
-        
-        # Add NHP shapes
-        for nhp, shape in nhp_shapes.items():
-            legend_elements.append(
-                plt.Line2D([0], [0], marker=shape, color='w', 
-                          markerfacecolor='gray', markersize=25,
-                          markeredgecolor='black', markeredgewidth=3,
-                          label=nhp, linestyle='None')
-            )
-        
-        # Create legend with black box
-        legend = ax.legend(handles=legend_elements, 
-                          loc='upper left',
-                          frameon=True, 
-                          fontsize=PLOT_SETTINGS["legend_font_size"]-4,
-                          ncol=1)
-        
-        legend.get_frame().set_edgecolor('black')
-        legend.get_frame().set_linewidth(2)
-        
-        # Set Arial font in legend
-        for text in legend.get_texts():
-            text.set_fontfamily('Arial')
-        
-        legend.set_bbox_to_anchor((0.02, 0.98))
-    
-    plt.tight_layout()
-    plt.subplots_adjust(bottom=0.15, left=0.12, right=0.95, top=0.88)
-    
-    plot_path = output_dir / 'mep_nhpues_correlation.png'
-    plt.savefig(plot_path, dpi=PLOT_SETTINGS["dpi"], 
-               bbox_inches='tight', facecolor='white',
-               edgecolor='none', pad_inches=0.3, transparent=False)
-    plt.show()
-    
-    print(f"✅ MEP-NHPUES correlation plot saved: {plot_path}")
-    print(f"📊 Correlations calculated:")
-    for muscle, corr in correlations.items():
-        display_name = "APB" if muscle == "Abductor Pollicis Brevis" else "Brachioradialis" if muscle == "Brachioradialis" else muscle
-        print(f"   {display_name}: r = {corr:.3f}")
-    
-    return fig
+    muscle_names = [m for m, show in MUSCLE_CONFIG.items() if show]
 
-def print_poster_summary(all_experiments: dict):
-    """Print concise summary suitable for poster text"""
-    
-    print(f"\n" + "="*60)
-    print("                POSTER SUMMARY - KEY FINDINGS")
-    print("="*60)
-    
-    muscle_names = [muscle for muscle, show in MUSCLE_CONFIG.items() if show]
-    
-    all_healthy_means = []
-    all_stroke_means = []
-    all_impairments = []
-    significant_results = 0
-    total_comparisons = 0
-    
     for exp_name, exp_data in all_experiments.items():
-        config = exp_data['config']
-        stats_results = exp_data['stats_results']
-        
+        cfg = exp_data["config"]
+        print(f"\n{exp_name} ({cfg['short_name']}):")
         for muscle in muscle_names:
-            if muscle in stats_results:
-                stats = stats_results[muscle]
-                all_healthy_means.append(stats['healthy']['mean'])
-                all_stroke_means.append(stats['stroke']['mean'])
-                all_impairments.append(stats['mean_impairment_percent'])
-                total_comparisons += 1
-                if stats['significant']:
-                    significant_results += 1
-    
-    if all_healthy_means:
-        print(f"\n🎯 KEY FINDINGS FOR POSTER:")
-        print(f"   • Healthy Hemisphere: {np.mean(all_healthy_means):.1f} ± {np.std(all_healthy_means):.1f} µV")
-        print(f"   • Stroke Hemisphere: {np.mean(all_stroke_means):.1f} ± {np.std(all_stroke_means):.1f} µV")
-        print(f"   • Average Impairment: {np.mean(all_impairments):.1f}% ± {np.std(all_impairments):.1f}%")
-        print(f"   • Significant Results: {significant_results}/{total_comparisons} comparisons")
-        print(f"   • Sample Size: {len(all_experiments)} subjects, {len(muscle_names)} muscle groups")
-    
-    print(f"\n🔗 CORRELATION FINDINGS:")
-    print(f"   • Hand muscles show strongest predictive relationship with motor function")
-    print(f"   • Pilot data (n=3) suggests distal > proximal muscle hierarchy")
-    print(f"   • Effect sizes support larger confirmatory study")
-    
-    print("="*60)
+            if muscle not in exp_data["stats_results"]:
+                continue
+            s = exp_data["stats_results"][muscle]
+            print(
+                f"  {muscle:24s} "
+                f"H mean={s['healthy']['mean']:.2f} (n={s['healthy']['n']}) | "
+                f"S mean={s['stroke']['mean']:.2f} (n={s['stroke']['n']}) | "
+                f"p={s['p_value']:.3g} | d={s['cohens_d']:.2f}"
+            )
 
 # =============================================================================
-# MAIN FUNCTION
+# MAIN
 # =============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description='MEP Analysis - Poster Optimized with Half-Width NHPUES Panel')
-    parser.add_argument('--base-path', type=Path, default=Path.cwd(),
-                       help='Base path containing experiment folders')
-    parser.add_argument('--output-dir', type=Path, help='Output directory (optional)')
-    parser.add_argument('--stroke-only', action='store_true',
-                       help='Create stroke hemisphere plot with individual points only')
-    parser.add_argument('--correlation-only', action='store_true',
-                       help='Create MEP-NHPUES correlation plot only')
-    parser.add_argument('--bar-only', action='store_true',
-                       help='Create NHPUES bar plot only (narrower bars)')
-    parser.add_argument('--combined', action='store_true',
-                       help='Create combined MEP and NHPUES plot (half-width NHPUES panel)')
-    parser.add_argument('--all', action='store_true',
-                       help='Create all plots')
-    
+    parser = argparse.ArgumentParser(description="MEP Analysis (Poster Optimized) + Individual NHP plots")
+    parser.add_argument("--base-path", type=Path, default=Path.cwd(), help="Base path containing experiment folders")
+    parser.add_argument("--output-dir", type=Path, default=None, help="Output directory (optional)")
+    parser.add_argument("--stroke-only", action="store_true", help="Create group stroke plot only")
+    parser.add_argument("--bar-only", action="store_true", help="Create NHPUES bar plot only")
+    parser.add_argument("--individual-only", action="store_true", help="Create individual per-NHP stroke plots only")
+    parser.add_argument("--all", action="store_true", help="Create all plots")
+
     args = parser.parse_args()
-    
-    if not args.output_dir:
-        args.output_dir = args.base_path / 'poster_analysis_results'
-    
-    args.output_dir.mkdir(exist_ok=True, parents=True)
-    
-    print("="*60)
-    print("    MEP ANALYSIS - HALF-WIDTH NHPUES PANEL")
-    print("="*60)
+    out_dir = args.output_dir or (args.base_path / "poster_analysis_results")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print("=" * 60)
+    print("MEP ANALYSIS")
+    print("=" * 60)
     print(f"📁 Base path: {args.base_path}")
-    print(f"📁 Output: {args.output_dir}")
-    print(f"🎨 High contrast colors: Enabled")
-    print(f"📐 Poster dimensions: {PLOT_SETTINGS['figure_width']}x{PLOT_SETTINGS['figure_height']}")
-    print(f"🔍 DPI: {PLOT_SETTINGS['dpi']}")
-    print(f"🔤 Font: Arial (enforced throughout)")
-    print(f"🎨 Background: White")
-    print(f"📊 NHPUES panel: Half width of MEP panel (2:1 ratio)")
-    print(f"📊 Bar width: 40% narrower (0.36 instead of 0.6)")
-    
-    try:
-        all_experiments = load_all_experiment_data(args.base_path)
-        
-        if not all_experiments:
-            print("❌ No experiment data found")
-            return
-        
-        print(f"\n✅ Successfully loaded {len(all_experiments)} experiments")
-        
-        if args.stroke_only:
-            print("📊 Creating stroke hemisphere plot only")
-            create_poster_stroke_points_plot(all_experiments, args.output_dir)
-        elif args.correlation_only:
-            print("📈 Creating MEP-NHPUES correlation plot only")
-            create_mep_nhpues_correlation_plot(all_experiments, args.output_dir)
-        elif args.bar_only:
-            print("📊 Creating NHPUES bar plot only (narrower bars)")
-            create_mean_nhpues_bar_plot(all_experiments, args.output_dir)
-        elif args.combined:
-            print("📊 Creating combined MEP-NHPUES plot (half-width NHPUES panel)")
-            create_combined_mep_nhpues_plot(all_experiments, args.output_dir)
-        elif args.all:
-            print("📊 Creating all plots")
-            create_poster_stroke_points_plot(all_experiments, args.output_dir)
-            create_mep_nhpues_correlation_plot(all_experiments, args.output_dir)
-            create_mean_nhpues_bar_plot(all_experiments, args.output_dir)
-            create_combined_mep_nhpues_plot(all_experiments, args.output_dir)
-        else:
-            # Default behavior - create all plots
-            print("📊 Creating all plots (default behavior)")
-            create_poster_stroke_points_plot(all_experiments, args.output_dir)
-            create_mep_nhpues_correlation_plot(all_experiments, args.output_dir)
-            create_mean_nhpues_bar_plot(all_experiments, args.output_dir)
-            create_combined_mep_nhpues_plot(all_experiments, args.output_dir)
-        
-        print_poster_summary(all_experiments)
-        
-        print(f"\n🎨 PLOTS CREATED IN: {args.output_dir}")
-        print("   • FIXED: Systematic offsets prevent overlapping points")
-        print("   • FIXED: Better x-axis spacing (starts at 8.5)")
-        print("   • ENFORCED: Arial font throughout all plots")
-        print("   • ADDED: Black box around legend")
-        print("   • MODIFIED: NHPUES panel is now half the width of MEP panel")
-        print("   • MODIFIED: NHPUES bars are 40% narrower within their panel")
-        print("   • Perfect for conference poster presentations")
-        
-        print(f"\n✅ ENHANCED MEP ANALYSIS COMPLETE WITH HALF-WIDTH NHPUES PANEL!")
-        
-    except Exception as e:
-        print(f"\n❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
+    print(f"📁 Output:    {out_dir}")
+
+    all_experiments = load_all_experiment_data(args.base_path)
+    if not all_experiments:
+        print("❌ No experiment data found.")
+        return
+
+    # Decide what to create
+    if args.stroke_only:
+        create_group_stroke_points_plot(all_experiments, out_dir)
+
+    elif args.bar_only:
+        create_mean_nhpues_bar_plot(all_experiments, out_dir)
+
+    elif args.individual_only:
+        create_individual_stroke_plot_per_nhp(all_experiments, out_dir)
+
+    elif args.all or (not args.stroke_only and not args.bar_only and not args.individual_only):
+        # Default: all
+        create_group_stroke_points_plot(all_experiments, out_dir)
+        create_individual_stroke_plot_per_nhp(all_experiments, out_dir)
+        create_mean_nhpues_bar_plot(all_experiments, out_dir)
+
+    print_summary(all_experiments)
+    print(f"\n✅ Done. Outputs in: {out_dir}")
 
 if __name__ == "__main__":
     main()
