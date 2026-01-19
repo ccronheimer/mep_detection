@@ -21,6 +21,5 @@ Thumbs.db
 *.swo
 
 # Results
-*_results.csv
 *_CLEANED_*
 *_REPORT.txt

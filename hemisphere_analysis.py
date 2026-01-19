@@ -235,10 +235,8 @@ def robust_stats(x: pd.Series) -> dict:
     }
 
 def impairment_percent(h_center: float, s_center: float) -> str:
-    """
-    Guard against dividing by ~0.
-    """
-    if abs(h_center) < 1e-6:
+    # if healthy is basically flatlined, impairment is not meaningful
+    if h_center < 5.0:
         return "NA"
     return f"{(1 - (s_center / h_center)) * 100:.1f}%"
 

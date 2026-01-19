@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
 """
-Configurable Hemisphere/Phase-Aware TMS/MEP Detection Script (WINDOW + PEAK-BASED)
+Configurable Hemisphere/Phase-Aware TMS/MEP Detection Script
+HARDENED VERSION (WINDOW + PEAK-BASED)
 
-Key features:
-1) PEAK-based pulse detection (find_peaks) instead of rising-edge threshold crossing.
-2) Per-phase time windows (useful when early pulses didn’t record, e.g., Mely).
-3) Backward compatible: if a config has hemisphere_switch_time (no "phases"), it behaves like
-   the old script: healthy=[0, switch), stroke=[switch, end).
-4) QA outputs:
-   - ISI statistics per phase
-   - Overlay plot (rectified signal with detected peaks) for first 30s of each phase
+Adds:
+1) Robust per-channel clipping BEFORE filtering (prevents filtfilt ringing from huge spikes)
+2) Multi-channel detection signal per phase (median of robust-z across target channels)
+3) Optional MEP validity gating on HAND channel per phase (baseline RMS + 15–50ms p2p range)
+4) Still backward compatible: switch-time configs OR windowed "phases" configs
 
 Usage:
-  python detection_windowed.py "Dec1_Mely" --config Dec1_Mely --fs 2000
+  python detection_hardened.py Dec1_Andy --config Dec1_Andy --fs 2000
+  python detection_hardened.py Dec1_Mely --config Dec1_Mely --fs 2000
+
+Helpful knobs:
+  --clip-pct 99.9
+  --mep-gate                 (enable MEP validity gating)
+  --mep-min-uv 20
+  --mep-max-uv 5000
+  --baseline-rms-max 50
+  --keep-strongest N         (optional cap after gating; otherwise uses expected_pulses)
 """
 
 import argparse
@@ -25,35 +32,33 @@ import scipy.io as sio
 import scipy.signal as sig
 import matplotlib.pyplot as plt
 
+
 # ============================================================================
 # EXPERIMENT CONFIGURATIONS
 # ============================================================================
 
 EXPERIMENT_CONFIGS = {
-"Dec1_Andy": {
-    "description": "Dec 1 Andy Experiment",
-    "hemisphere_switch_time": 1238.4,
-
-    "healthy": {
-        "channels": [135, 132, 130],
-        "channel_names": ["Right Upper", "Right Forearm", "Right Hand"],
-        "expected_pulses": 164,
-        "min_isi_s": 3.5,
-        "peak_prominence_mult": 8.0,
-        "description": "Healthy: Left hemisphere → Right muscles (pulses 1–164)"
+    "Dec1_Andy": {
+        "description": "Dec 1 Andy Experiment",
+        "hemisphere_switch_time": 1238.4,
+        "healthy": {
+            "channels": [135, 132, 130],  # Right upper, forearm, hand
+            "channel_names": ["Right Upper", "Right Forearm", "Right Hand"],
+            "expected_pulses": 164,
+            "min_isi_s": 3.5,
+            "peak_prominence_mult": 8.0,
+            "description": "Healthy: Left hemisphere → Right muscles (pulses 1–164)",
+        },
+        "stroke": {
+            "channels": [136, 137, 139],  # Left upper, forearm, hand
+            "channel_names": ["Left Upper", "Left Forearm", "Left Hand"],
+            "expected_pulses": 121,
+            "min_isi_s": 6.0,
+            "peak_prominence_mult": 8.0,
+            "description": "Stroke: Right hemisphere → Left muscles (pulses 165–285)",
+        },
     },
 
-    "stroke": {
-        "channels": [136, 137, 139],
-        "channel_names": ["Left Upper", "Left Forearm", "Left Hand"],
-        "expected_pulses": 121,
-        "min_isi_s": 6.0,
-        "peak_prominence_mult": 8.0,
-        "description": "Stroke: Right hemisphere → Left muscles (pulses 165–285)"
-    }
-},
-
-    # --- Windowed config for Mely ---
     "Dec1_Mely": {
         "description": "Dec 1 Mely (windowed)",
         "fs_hint": 2000,
@@ -65,7 +70,7 @@ EXPERIMENT_CONFIGS = {
                 "expected_pulses": 120,
                 "min_isi_s": 1.1,
                 "peak_prominence_mult": 6.0,
-                "description": "Healthy pulses 131–250 (Right muscles)"
+                "description": "Healthy pulses 131–250 (Right muscles)",
             },
             "stroke": {
                 "time_window_s": [697.0, None],
@@ -74,12 +79,11 @@ EXPERIMENT_CONFIGS = {
                 "expected_pulses": 122,
                 "min_isi_s": 2.0,
                 "peak_prominence_mult": 6.0,
-                "description": "Stroke pulses 251–372 (Left muscles)"
-            }
-        }
+                "description": "Stroke pulses 251–372 (Left muscles)",
+            },
+        },
     },
 
-    # --- Existing configs (switch-time mode) ---
     "Nov5_Olive": {
         "description": "Nov5 Olive Experiment",
         "hemisphere_switch_time": 695.0,
@@ -87,31 +91,18 @@ EXPERIMENT_CONFIGS = {
             "channels": [2, 4, 7],
             "channel_names": ["Right Upper", "Right Forearm", "Right Hand"],
             "expected_pulses": 182,
-            "description": "Healthy Left Hemisphere → Right Muscles (0-695s)"
+            "min_isi_s": 0.6,
+            "peak_prominence_mult": 6.0,
+            "description": "Healthy Left Hemisphere → Right Muscles (0-695s)",
         },
         "stroke": {
             "channels": [8, 9, 11],
             "channel_names": ["Left Upper", "Left Forearm", "Left Hand"],
             "expected_pulses": 263,
-            "description": "Stroke Right Hemisphere → Left Muscles (695s-end)"
-        }
-    },
-
-    "Nov5_Chive": {
-        "description": "Nov5 Chive Experiment (Ch2,10 noisy)",
-        "hemisphere_switch_time": 857.0,
-        "healthy": {
-            "channels": [9, 2, 8],
-            "channel_names": ["Right Upper", "Right Forearm", "Right Hand"],
-            "expected_pulses": 115,
-            "description": "Healthy Left Hemisphere → Right Muscles"
+            "min_isi_s": 0.6,
+            "peak_prominence_mult": 6.0,
+            "description": "Stroke Right Hemisphere → Left Muscles (695s-end)",
         },
-        "stroke": {
-            "channels": [4, 10, 7],
-            "channel_names": ["Left Upper", "Left Forearm", "Left Hand"],
-            "expected_pulses": 172,
-            "description": "Stroke Right Hemisphere → Left Muscles"
-        }
     },
 
     "Nov5_Cheddar": {
@@ -121,14 +112,18 @@ EXPERIMENT_CONFIGS = {
             "channels": [2, 4, 12],
             "channel_names": ["Right Upper", "Right Forearm", "Right Hand"],
             "expected_pulses": 105,
-            "description": "Healthy Left Hemisphere → Right Muscles"
+            "min_isi_s": 0.6,
+            "peak_prominence_mult": 6.0,
+            "description": "Healthy Left Hemisphere → Right Muscles",
         },
         "stroke": {
             "channels": [14, 9, 13],
             "channel_names": ["Left Upper", "Left Forearm", "Left Hand"],
             "expected_pulses": 195,
-            "description": "Stroke Right Hemisphere → Left Muscles"
-        }
+            "min_isi_s": 0.6,
+            "peak_prominence_mult": 6.0,
+            "description": "Stroke Right Hemisphere → Left Muscles",
+        },
     },
 
     "Oct31_Chive": {
@@ -138,19 +133,24 @@ EXPERIMENT_CONFIGS = {
             "channels": [1, 2, 3],
             "channel_names": ["Right Upper", "Right Forearm", "Right Hand"],
             "expected_pulses": 85,
-            "description": "Healthy Left Hemisphere → Right Muscles"
+            "min_isi_s": 0.6,
+            "peak_prominence_mult": 6.0,
+            "description": "Healthy Left Hemisphere → Right Muscles",
         },
         "stroke": {
             "channels": [4, 5, 6],
             "channel_names": ["Left Upper", "Left Forearm", "Left Hand"],
             "expected_pulses": 205,
-            "description": "Stroke Right Hemisphere → Left Muscles"
-        }
-    }
+            "min_isi_s": 0.6,
+            "peak_prominence_mult": 6.0,
+            "description": "Stroke Right Hemisphere → Left Muscles",
+        },
+    },
 }
 
+
 # ============================================================================
-# HELPERS / QA
+# HELPERS
 # ============================================================================
 
 def get_experiment_config(folder_path, config_name=None):
@@ -158,25 +158,21 @@ def get_experiment_config(folder_path, config_name=None):
     folder_name = folder.name
 
     if config_name and config_name in EXPERIMENT_CONFIGS:
-        config = EXPERIMENT_CONFIGS[config_name].copy()
         print(f"📋 Using specified config: {config_name}")
-        return config
+        return EXPERIMENT_CONFIGS[config_name].copy()
 
     if folder_name in EXPERIMENT_CONFIGS:
-        config = EXPERIMENT_CONFIGS[folder_name].copy()
         print(f"📋 Found exact match config: {folder_name}")
-        return config
+        return EXPERIMENT_CONFIGS[folder_name].copy()
 
     for key in EXPERIMENT_CONFIGS:
         if key.lower() in folder_name.lower() or folder_name.lower() in key.lower():
-            config = EXPERIMENT_CONFIGS[key].copy()
             print(f"📋 Found partial match config: {key} for folder {folder_name}")
-            return config
+            return EXPERIMENT_CONFIGS[key].copy()
 
     default_key = list(EXPERIMENT_CONFIGS.keys())[0]
-    config = EXPERIMENT_CONFIGS[default_key].copy()
     print(f"⚠️ No matching config found for '{folder_name}', using default: {default_key}")
-    return config
+    return EXPERIMENT_CONFIGS[default_key].copy()
 
 
 def detect_available_channels(folder: Path):
@@ -189,6 +185,48 @@ def detect_available_channels(folder: Path):
     available.sort()
     print(f"🔍 Detected channels: {available}")
     return available
+
+
+def mad(x: np.ndarray) -> float:
+    x = np.asarray(x)
+    med = np.median(x)
+    return float(np.median(np.abs(x - med)))
+
+
+def normalize_config_to_phases(config: dict, ts: np.ndarray):
+    if "phases" in config:
+        return config["phases"]
+
+    switch_time = float(config.get("hemisphere_switch_time", ts[-1]))
+    return {
+        "healthy": {**config["healthy"], "time_window_s": [0.0, switch_time]},
+        "stroke":  {**config["stroke"],  "time_window_s": [switch_time, None]},
+    }
+
+
+def time_window_to_indices(ts: np.ndarray, start_s: float, end_s):
+    if start_s is None:
+        start_s = 0.0
+    start_idx = int(np.searchsorted(ts, float(start_s), side="left"))
+    if end_s is None:
+        end_idx = len(ts)
+    else:
+        end_idx = int(np.searchsorted(ts, float(end_s), side="left"))
+    end_idx = max(start_idx + 1, min(end_idx, len(ts)))
+    return start_idx, end_idx
+
+
+def enforce_min_isi(peaks, min_samples):
+    peaks = np.asarray(peaks, dtype=int)
+    if len(peaks) == 0:
+        return peaks
+    out = [int(peaks[0])]
+    last = out[0]
+    for p in peaks[1:]:
+        if int(p) - last >= int(min_samples):
+            out.append(int(p))
+            last = int(p)
+    return np.array(out, dtype=int)
 
 
 def qa_isi_stats(ts, detected_indices, label):
@@ -215,27 +253,14 @@ def qa_overlay_plot(ts, rect_signal, global_peaks, t0, t1, title):
         plt.scatter(ts[pk], rect_signal[pk], s=25)
     plt.title(title)
     plt.xlabel("Time (s)")
-    plt.ylabel("Rectified EMG")
+    plt.ylabel("Rectified EMG (detection signal)")
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.show()
 
 
-def enforce_min_isi(peaks, min_samples):
-    peaks = np.asarray(peaks, dtype=int)
-    if len(peaks) == 0:
-        return peaks
-    out = [int(peaks[0])]
-    last = out[0]
-    for p in peaks[1:]:
-        if int(p) - last >= int(min_samples):
-            out.append(int(p))
-            last = int(p)
-    return np.array(out, dtype=int)
-
-
 # ============================================================================
-# IO + FILTERING
+# IO + PREPROCESS
 # ============================================================================
 
 def load_emg_data_flexible(folder: Path):
@@ -251,10 +276,9 @@ def load_emg_data_flexible(folder: Path):
         m = re.search(r"chan(\d+)\.mat", f.name)
         if m:
             chan_info.append((int(m.group(1)), f))
-
     chan_info.sort(key=lambda x: x[0])
-    chan_numbers = [x[0] for x in chan_info]
 
+    chan_numbers = [x[0] for x in chan_info]
     n_chan = len(chan_info)
     emg = np.zeros((n_chan, len(ts)), dtype=np.float32)
 
@@ -269,52 +293,89 @@ def load_emg_data_flexible(folder: Path):
     return ts, emg, chan_numbers
 
 
-def butterworth_filter_superior(emg, fs, lowcut=10, highcut=500, order=2):
+def robust_clip_per_channel(emg_uV: np.ndarray, clip_pct: float = 99.9) -> np.ndarray:
+    """
+    Clip extreme spikes per channel by symmetric percentile of absolute value.
+    This prevents filtfilt ringing from huge transients.
+    """
+    out = emg_uV.copy().astype(np.float32)
+    for i in range(out.shape[0]):
+        x = out[i]
+        thr = np.percentile(np.abs(x), clip_pct)
+        if thr <= 0:
+            continue
+        out[i] = np.clip(x, -thr, +thr)
+    return out
+
+
+def butterworth_filter(emg_uV, fs, lowcut=10, highcut=500, order=2):
     print(f"🔧 Applying {order}-order Butterworth filter: {lowcut}-{highcut} Hz")
     nyq = fs / 2.0
     low = lowcut / nyq
     high = min(highcut / nyq, 0.99)
     b, a = sig.butter(order, [low, high], btype="band")
-    filtered = sig.filtfilt(b, a, emg, axis=1)
+    filtered = sig.filtfilt(b, a, emg_uV, axis=1)
     rectified = np.abs(filtered)
     print(f"✅ Filtered signal range: {filtered.min():.3f} to {filtered.max():.3f}")
     return filtered, rectified
 
 
-def mad(x: np.ndarray) -> float:
-    med = np.median(x)
-    return float(np.median(np.abs(x - med)))
-
-
 # ============================================================================
-# DETECTION CORE
+# DETECTION CORE (MULTI-CHANNEL)
 # ============================================================================
 
-def optimize_detection_threshold_peaks(signal, fs, expected_n, min_isi_s=0.6, peak_prom_mult=6.0):
-    signal = np.asarray(signal, dtype=np.float64)
+def build_detection_signal(seg_rect: np.ndarray, chan_numbers: list, target_channels: list) -> np.ndarray:
+    """
+    Build a robust multi-channel detection signal:
+      - take only available target channels
+      - robust-z each channel (x - median) / MAD
+      - take median across channels (reduces duplicates/artifacts)
+      - rectify already done; this is for consistent peak detection
+    """
+    idxs = [chan_numbers.index(ch) for ch in target_channels if ch in chan_numbers]
+    if not idxs:
+        return None
 
+    Z = []
+    for idx in idxs:
+        x = seg_rect[idx].astype(np.float64)
+        med = np.median(x)
+        sc = mad(x)
+        if sc <= 1e-9:
+            sc = float(np.std(x) + 1e-9)
+        z = (x - med) / sc
+        Z.append(z)
+
+    Z = np.vstack(Z)
+    det = np.max(Z, axis=0)
+    det = np.maximum(det, 0.0)  # keep non-negative
+    return det.astype(np.float64)
+
+
+def optimize_peaks_on_signal(det_signal, fs, expected_n, min_isi_s, peak_prom_mult):
+    det_signal = np.asarray(det_signal, dtype=np.float64)
     distance = max(1, int(min_isi_s * fs))
-    baseline = np.median(signal)
-    scale = mad(signal)
-    if scale <= 0:
-        scale = float(np.std(signal) + 1e-9)
+
+    base = np.median(det_signal)
+    sc = mad(det_signal)
+    if sc <= 1e-9:
+        sc = float(np.std(det_signal) + 1e-9)
 
     best_peaks = np.array([], dtype=int)
     best_score = float("inf")
 
-    for mult in np.arange(2.0, 25.0, 0.25):
-        height = baseline + mult * scale
-        prominence = peak_prom_mult * scale
+    # threshold sweep (robust-z domain)
+    for mult in np.arange(1.0, 12.0, 0.25):
+        height = base + mult * sc
+        prominence = peak_prom_mult * sc
 
-        peaks, _props = sig.find_peaks(signal, height=height, prominence=prominence, distance=distance)
+        peaks, _ = sig.find_peaks(det_signal, height=height, prominence=prominence, distance=distance)
         peaks = enforce_min_isi(peaks, distance)
 
-        count_err = abs(len(peaks) - expected_n)
+        err = abs(len(peaks) - expected_n)
+        strength_bonus = -float(np.median(det_signal[peaks])) if len(peaks) else 0.0
+        score = err * 1e6 + strength_bonus
 
-        # Use peak heights as a stable "strength" bonus (since we enforced peaks after find_peaks)
-        strength_bonus = -float(np.median(signal[peaks])) if len(peaks) else 0.0
-
-        score = count_err * 1e6 + strength_bonus
         if score < best_score:
             best_score = score
             best_peaks = peaks
@@ -322,127 +383,157 @@ def optimize_detection_threshold_peaks(signal, fs, expected_n, min_isi_s=0.6, pe
     return best_peaks.astype(int)
 
 
-def calculate_snr(signal, peaks, fs):
-    if len(peaks) == 0:
-        return 0.0
-    pre_samples = int(0.2 * fs)
-    p2p = []
-    for p in peaks:
-        if p - pre_samples >= 0 and p + pre_samples < len(signal):
-            w = signal[p - pre_samples:p + pre_samples + 1]
-            p2p.append(float(np.max(w) - np.min(w)))
-    if not p2p:
-        return 0.0
-    base_std = float(np.std(signal[:pre_samples])) if pre_samples < len(signal) else float(np.std(signal))
-    return float(np.mean(p2p) / base_std) if base_std > 0 else 0.0
+def mep_gate_keep(peaks_global, emg_filt, ts, fs, phase_cfg, chan_numbers,
+                  mep_min_uv, mep_max_uv, baseline_rms_max, keep_strongest=None):
+    """
+    Gate events using ANY of the phase's target channels (not just "hand").
+    Score each event by the BEST (max) valid MEP p2p across channels.
+    Fail-open: if gate removes all, return original peaks.
+    """
+    peaks_global = np.asarray(peaks_global, dtype=int)
+    if len(peaks_global) == 0:
+        return peaks_global
+
+    # Use all phase channels as candidates for gating
+    candidate_ch = [ch for ch in phase_cfg["channels"] if ch in chan_numbers]
+    if not candidate_ch:
+        print("   ⚠️ MEP gate: no candidate channels found; skipping gate.")
+        return peaks_global
+
+    candidate_idx = [chan_numbers.index(ch) for ch in candidate_ch]
+
+    pre = int(50 * fs / 1000)
+    post = int(150 * fs / 1000)
+    mep_start = int(15 * fs / 1000)
+    mep_end = int(50 * fs / 1000)
+
+    good = []
+    scores = []
+
+    for p in peaks_global:
+        if p - pre < 0 or p + post >= emg_filt.shape[1]:
+            continue
+
+        best_amp = None
+        best_brms = None
+
+        # Evaluate each candidate channel, take the best valid one
+        for idx in candidate_idx:
+            x = emg_filt[idx]
+            ep = x[p - pre:p + post].astype(np.float64)
+            ep = ep - np.mean(ep[:pre])
+
+            baseline = ep[:pre]
+            brms = float(np.sqrt(np.mean(baseline ** 2)))
+
+            mep_seg = ep[pre + mep_start: pre + mep_end]
+            amp = float(np.max(mep_seg) - np.min(mep_seg)) if len(mep_seg) else 0.0
+
+            if brms <= baseline_rms_max and (mep_min_uv <= amp <= mep_max_uv):
+                if (best_amp is None) or (amp > best_amp):
+                    best_amp = amp
+                    best_brms = brms
+
+        if best_amp is not None:
+            good.append(int(p))
+            scores.append(float(best_amp))
+
+    good = np.asarray(good, dtype=int)
+
+    # ✅ Fail-open: if gate nukes everything, keep original peaks
+    if len(good) == 0:
+        print("   ⚠️ MEP gate removed ALL events — FAIL-OPEN: keeping original peaks (ungated).")
+        return peaks_global
+
+    # keep strongest by best_amp
+    scores = np.asarray(scores, dtype=float)
+    order = np.argsort(-scores)
+
+    target_n = int(phase_cfg.get("expected_pulses", len(good)))
+    if keep_strongest is not None:
+        target_n = min(target_n, int(keep_strongest))
+
+    good = good[order][:target_n]
+    good.sort()
+    return good
 
 
-def normalize_config_to_phases(config: dict, ts: np.ndarray):
-    if "phases" in config:
-        return config["phases"]
 
-    switch_time = float(config.get("hemisphere_switch_time", ts[-1]))
-    return {
-        "healthy": {**config["healthy"], "time_window_s": [0.0, switch_time]},
-        "stroke": {**config["stroke"], "time_window_s": [switch_time, None]},
-    }
+def detect_phase(ts, emg_rect, emg_filt, chan_numbers, fs, phase_name, phase_cfg,
+                 enable_overlay=True, use_mep_gate=False,
+                 mep_min_uv=20, mep_max_uv=5000, baseline_rms_max=50, keep_strongest=None):
 
-
-def time_window_to_indices(ts: np.ndarray, start_s: float, end_s):
-    if start_s is None:
-        start_s = 0.0
-    start_idx = int(np.searchsorted(ts, start_s, side="left"))
-
-    if end_s is None:
-        end_idx = len(ts)
-    else:
-        end_idx = int(np.searchsorted(ts, float(end_s), side="left"))
-
-    end_idx = max(start_idx + 1, min(end_idx, len(ts)))
-    return start_idx, end_idx
-
-
-def detect_phase_peaks(emg_rect, chan_numbers, ts, fs, phase_name, phase_cfg, enable_overlay=True):
     target_channels = phase_cfg["channels"]
-    expected_pulses = int(phase_cfg.get("expected_pulses", 0))
+    expected = int(phase_cfg.get("expected_pulses", 0))
     min_isi_s = float(phase_cfg.get("min_isi_s", 0.6))
-    peak_prom_mult = float(phase_cfg.get("peak_prominence_mult", 6.0))
+    prom_mult = float(phase_cfg.get("peak_prominence_mult", 6.0))
 
     win = phase_cfg.get("time_window_s", [0.0, None])
     start_s, end_s = win[0], (win[1] if len(win) > 1 else None)
-
     start_idx, end_idx = time_window_to_indices(ts, start_s, end_s)
+
     seg_ts = ts[start_idx:end_idx]
-    seg_emg = emg_rect[:, start_idx:end_idx]
+    seg_rect = emg_rect[:, start_idx:end_idx]
 
     print(f"\n🧠 {phase_cfg.get('description', phase_name)}")
     print(f"   Target channels: {target_channels}")
-    print(f"   Expected pulses: {expected_pulses}")
-    print(f"   min_isi_s: {min_isi_s}, peak_prominence_mult: {peak_prom_mult}")
+    print(f"   Expected pulses: {expected}")
+    print(f"   min_isi_s: {min_isi_s}, peak_prominence_mult: {prom_mult}")
     print(f"   Window: {seg_ts[0]:.1f}s - {seg_ts[-1]:.1f}s (n={len(seg_ts)})")
 
-    available_target = [ch for ch in target_channels if ch in chan_numbers]
-    missing = [ch for ch in target_channels if ch not in chan_numbers]
-    if missing:
-        print(f"   ⚠️ Missing channels: {missing}")
-    if not available_target:
+    det = build_detection_signal(seg_rect, chan_numbers, target_channels)
+    if det is None:
         print(f"   ❌ No target channels available for {phase_name}")
         return None
 
-    results = []
-    for ch in available_target:
-        idx = chan_numbers.index(ch)
-        signal = seg_emg[idx]
+    peaks_local = optimize_peaks_on_signal(det, fs, expected, min_isi_s, prom_mult)
+    peaks_global = peaks_local + start_idx
 
-        peaks = optimize_detection_threshold_peaks(
-            signal=signal,
-            fs=fs,
-            expected_n=expected_pulses,
-            min_isi_s=min_isi_s,
-            peak_prom_mult=peak_prom_mult,
+    qa_isi_stats(ts, peaks_global, phase_name)
+
+    # Optional physiological gate using HAND channel
+    if use_mep_gate and len(peaks_global):
+        before = len(peaks_global)
+        peaks_global = mep_gate_keep(
+            peaks_global, emg_filt, ts, fs, phase_cfg, chan_numbers,
+            mep_min_uv=mep_min_uv, mep_max_uv=mep_max_uv,
+            baseline_rms_max=baseline_rms_max,
+            keep_strongest=keep_strongest
         )
+        after = len(peaks_global)
+        print(f"   ✅ MEP gate kept {after}/{before} events")
 
-        err = abs(len(peaks) - expected_pulses)
-        snr = calculate_snr(signal, peaks, fs)
-        results.append((err, -snr, ch, idx, peaks, snr))
-        print(f"   Ch {ch}: {len(peaks)} pulses, error={err}, SNR={snr:.2f}")
-
-    results.sort()
-    _, _, best_ch, best_idx, best_peaks, _best_snr = results[0]
-
-    global_peaks = best_peaks + start_idx
-
-    qa_isi_stats(ts, global_peaks, phase_name)
-
-    if len(global_peaks):
-        print(
-            f"   ✅ Selected Ch{best_ch} | detected={len(global_peaks)} | "
-            f"first={ts[global_peaks[0]]:.2f}s last={ts[global_peaks[-1]]:.2f}s"
-        )
+    if len(peaks_global):
+        print(f"   ✅ Detected={len(peaks_global)} | first={ts[peaks_global[0]]:.2f}s last={ts[peaks_global[-1]]:.2f}s")
     else:
-        print(f"   ✅ Selected Ch{best_ch} | detected=0")
+        print("   ✅ Detected=0")
 
-    if enable_overlay and len(global_peaks):
-        best_rect_global = emg_rect[chan_numbers.index(best_ch)]
+    if enable_overlay:
         t0 = float(seg_ts[0])
         t1 = float(min(seg_ts[0] + 30.0, seg_ts[-1]))
-        qa_overlay_plot(ts, best_rect_global, global_peaks, t0, t1, f"{phase_name} QA overlay (Ch{best_ch})")
+        # overlay the detection signal itself (not one channel)
+        # Create a "global" array for plotting
+        det_global = np.zeros_like(ts, dtype=float)
+        det_global[start_idx:end_idx] = det
+        qa_overlay_plot(ts, det_global, peaks_global, t0, t1, f"{phase_name} QA overlay (multi-channel det)")
 
     return {
         "phase": phase_name,
-        "channel_num": int(best_ch),
-        "channel_idx": int(best_idx),
-        "detected_indices": global_peaks.astype(int),
+        "detected_indices": peaks_global.astype(int),
         "time_range": (float(seg_ts[0]), float(seg_ts[-1])),
         "config": phase_cfg,
     }
 
 
-def run_detection(emg_rect, chan_numbers, ts, fs, config, enable_overlay=True):
-    print("🎯 PHASE-AWARE PULSE DETECTION (WINDOW + PEAK)")
-    print("=" * 55)
+def run_detection(ts, emg_rect, emg_filt, chan_numbers, fs, config,
+                  enable_overlay=True, use_mep_gate=False,
+                  mep_min_uv=20, mep_max_uv=5000, baseline_rms_max=50, keep_strongest=None):
+
+    print("🎯 PHASE-AWARE PULSE DETECTION (MULTI-CHANNEL + OPTIONAL MEP GATE)")
+    print("=" * 70)
 
     phases = normalize_config_to_phases(config, ts)
+
     all_detections = []
     phase_results = {}
 
@@ -450,23 +541,29 @@ def run_detection(emg_rect, chan_numbers, ts, fs, config, enable_overlay=True):
         if phase_name not in phases:
             continue
 
-        res = detect_phase_peaks(
-            emg_rect, chan_numbers, ts, fs, phase_name, phases[phase_name], enable_overlay=enable_overlay
+        res = detect_phase(
+            ts, emg_rect, emg_filt, chan_numbers, fs,
+            phase_name, phases[phase_name],
+            enable_overlay=enable_overlay,
+            use_mep_gate=use_mep_gate,
+            mep_min_uv=mep_min_uv,
+            mep_max_uv=mep_max_uv,
+            baseline_rms_max=baseline_rms_max,
+            keep_strongest=keep_strongest,
         )
+
         if res is None:
             continue
 
         phase_results[phase_name] = res
 
         for idx in res["detected_indices"]:
-            all_detections.append(
-                {
-                    "pulse_index": int(idx),
-                    "pulse_time_s": float(ts[idx]),
-                    "phase": phase_name,
-                    "channel_used": int(res["channel_num"]),
-                }
-            )
+            all_detections.append({
+                "pulse_index": int(idx),
+                "pulse_time_s": float(ts[idx]),
+                "phase": phase_name,
+                "detection_channel": -1,  # multi-channel detector
+            })
 
     all_detections.sort(key=lambda d: d["pulse_index"])
     return all_detections, phase_results
@@ -492,15 +589,13 @@ def extract_meps(emg_filtered, all_detections, ts, fs):
         if pulse_idx - pre_samples >= 0 and pulse_idx + post_samples < emg_filtered.shape[1]:
             epoch = emg_filtered[:, pulse_idx - pre_samples : pulse_idx + post_samples]
             epochs.append(epoch)
-            info.append(
-                {
-                    "detection_idx": len(epochs) - 1,
-                    "pulse_index": pulse_idx,
-                    "pulse_time_s": float(ts[pulse_idx]),
-                    "phase": d["phase"],
-                    "detection_channel": d["channel_used"],
-                }
-            )
+            info.append({
+                "detection_idx": len(epochs) - 1,
+                "pulse_index": pulse_idx,
+                "pulse_time_s": float(ts[pulse_idx]),
+                "phase": d["phase"],
+                "detection_channel": d["detection_channel"],
+            })
 
     if epochs:
         epochs = np.array(epochs)
@@ -547,7 +642,7 @@ def compute_amplitudes(epochs, time_vector, detection_info, chan_numbers, fs, co
             if i >= n_chan:
                 continue
 
-            sig_ep = epochs[eidx, i, :]
+            sig_ep = epochs[eidx, i, :].astype(np.float64)
             if 0 < baseline_end < len(sig_ep):
                 sig_ep = sig_ep - np.mean(sig_ep[:baseline_end])
 
@@ -564,11 +659,17 @@ def compute_amplitudes(epochs, time_vector, detection_info, chan_numbers, fs, co
 
 
 # ============================================================================
-# PLOTTING
+# SUMMARY PLOTS
 # ============================================================================
 
 def create_summary_plots(df, config):
     print("\n📈 Creating summary plots...")
+
+      # ✅ Guard: if no detections, skip plots cleanly
+    if df is None or len(df) == 0 or ("phase" not in df.columns):
+        print("⚠️ No detections in df (empty). Skipping summary plots.")
+        return None
+    
     fig = plt.figure(figsize=(16, 8))
     fig.suptitle(f"MEP Detection Results: {config.get('description','')}", fontsize=14, fontweight="bold")
 
@@ -595,7 +696,7 @@ def create_summary_plots(df, config):
         amps = healthy[col].dropna() if col in healthy.columns else pd.Series([], dtype=float)
         if len(amps):
             ax2.hist(amps, bins=15, alpha=0.8)
-            ax2.set_xlabel("Amplitude")
+            ax2.set_xlabel("Amplitude (µV)")
             ax2.set_ylabel("Count")
 
     ax3 = plt.subplot(1, 3, 3)
@@ -606,7 +707,7 @@ def create_summary_plots(df, config):
         amps = stroke[col].dropna() if col in stroke.columns else pd.Series([], dtype=float)
         if len(amps):
             ax3.hist(amps, bins=15, alpha=0.8)
-            ax3.set_xlabel("Amplitude")
+            ax3.set_xlabel("Amplitude (µV)")
             ax3.set_ylabel("Count")
 
     plt.tight_layout()
@@ -619,15 +720,24 @@ def create_summary_plots(df, config):
 # ============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="MEP Detection (window + peak based)")
+    parser = argparse.ArgumentParser(description="MEP Detection (hardened)")
     parser.add_argument("folder", type=Path, help="Session folder containing Timestamps.mat and chan*.mat")
     parser.add_argument("--fs", type=float, default=2000.0, help="Sampling rate (nf3=2000)")
     parser.add_argument("--config", type=str, help="Experiment config name")
     parser.add_argument("--no-qa-plots", action="store_true", help="Disable QA overlay plots")
+
+    # hardening knobs
+    parser.add_argument("--clip-pct", type=float, default=99.9, help="Per-channel abs-value clip percentile before filtering")
+    parser.add_argument("--mep-gate", action="store_true", help="Enable MEP validity gate using HAND channel per phase")
+    parser.add_argument("--mep-min-uv", type=float, default=20.0, help="Min allowed p2p in 15–50ms window for gated events")
+    parser.add_argument("--mep-max-uv", type=float, default=5000.0, help="Max allowed p2p in 15–50ms window for gated events")
+    parser.add_argument("--baseline-rms-max", type=float, default=50.0, help="Max baseline RMS (pre-stim 50ms) for gated events")
+    parser.add_argument("--keep-strongest", type=int, default=None, help="Optional cap after gating (otherwise expected_pulses)")
+
     args = parser.parse_args()
 
     print("=" * 70)
-    print("    SIMPLE CONFIGURABLE MEP DETECTION (WINDOW + PEAK BASED)")
+    print("    SIMPLE CONFIGURABLE MEP DETECTION (HARDENED)")
     print("=" * 70)
 
     config = get_experiment_config(args.folder, args.config)
@@ -635,22 +745,37 @@ def main():
     detect_available_channels(args.folder)
     ts, emg_raw, chan_numbers = load_emg_data_flexible(args.folder)
 
+    # heuristic scaling
     raw_range = float(np.max(np.abs(emg_raw)))
     if raw_range < 1.0:
-        emg_scaled = emg_raw * 1e3
+        emg_uV = emg_raw * 1e3
         print("📊 Signal scaling: µV (scaled)")
     else:
-        emg_scaled = emg_raw
+        emg_uV = emg_raw
         print("📊 Signal scaling: µV")
 
-    emg_filtered, emg_rect = butterworth_filter_superior(emg_scaled, args.fs)
+    # NEW: robust clip before filtering
+    emg_uV = robust_clip_per_channel(emg_uV, clip_pct=args.clip_pct)
+    print(f"🧰 Pre-filter clipping: abs percentile={args.clip_pct}")
+
+    emg_filt, emg_rect = butterworth_filter(emg_uV, args.fs)
 
     all_detections, phase_results = run_detection(
-        emg_rect, chan_numbers, ts, args.fs, config, enable_overlay=(not args.no_qa_plots)
+        ts=ts,
+        emg_rect=emg_rect,
+        emg_filt=emg_filt,
+        chan_numbers=chan_numbers,
+        fs=args.fs,
+        config=config,
+        enable_overlay=(not args.no_qa_plots),
+        use_mep_gate=args.mep_gate,
+        mep_min_uv=args.mep_min_uv,
+        mep_max_uv=args.mep_max_uv,
+        baseline_rms_max=args.baseline_rms_max,
+        keep_strongest=args.keep_strongest,
     )
 
-    epochs, time_vector, detection_info = extract_meps(emg_filtered, all_detections, ts, args.fs)
-
+    epochs, time_vector, detection_info = extract_meps(emg_filt, all_detections, ts, args.fs)
     amplitude_rows = compute_amplitudes(epochs, time_vector, detection_info, chan_numbers, args.fs, config)
     df = pd.DataFrame(amplitude_rows)
 
@@ -672,13 +797,11 @@ def main():
     print(f"Total epochs:     {len(df)}")
     print(f"💾 Saved: {output_file}")
 
-    if "phases" in config:
-        for pname, pres in phase_results.items():
-            if pres and len(pres["detected_indices"]):
-                first_t = ts[pres["detected_indices"][0]]
-                last_t = ts[pres["detected_indices"][-1]]
-                print(f"🔎 {pname}: first={first_t:.2f}s last={last_t:.2f}s ch={pres['channel_num']} n={len(pres['detected_indices'])}")
-
+    for pname, pres in phase_results.items():
+        if pres and len(pres["detected_indices"]):
+            first_t = ts[pres["detected_indices"][0]]
+            last_t = ts[pres["detected_indices"][-1]]
+            print(f"🔎 {pname}: first={first_t:.2f}s last={last_t:.2f}s n={len(pres['detected_indices'])}")
 
 if __name__ == "__main__":
     main()
