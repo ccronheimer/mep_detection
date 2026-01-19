@@ -208,7 +208,9 @@ ANALYSIS_CONFIGS = {
             "channel_names": ["Left Upper", "Left Forearm", "Left Hand"],
             "expected_pulses": 122,
         },
-            "Dec1_Andy": {
+    },
+
+    "Dec1_Andy": {
         "description": "Dec 1 Andy Experiment",
         "short_name": "Andy",
         "color": "#1F78B4",  # (optional) or keep "#2E2E2E" if you want
@@ -225,10 +227,8 @@ ANALYSIS_CONFIGS = {
             "channels": [136, 137, 139],
             "channel_names": ["Left Upper", "Left Forearm", "Left Hand"],
             "expected_pulses": 121,
-        },
-    },
-        
-    },
+        },   
+    }
 }
 
 # Apply MONKEY_CONFIG overrides (show/color/labeling)
